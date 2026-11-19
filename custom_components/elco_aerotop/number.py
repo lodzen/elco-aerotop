@@ -19,7 +19,7 @@ from .models import NumericVariable
 class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
     _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_mode = NumberMode.BOX
+    _attr_mode = NumberMode.SLIDER
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
@@ -80,6 +80,7 @@ class ElcoBsbNumber(ElcoAerotopEntity, NumberEntity):
         if spec.temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+            self._attr_mode = NumberMode.SLIDER
 
     @property
     def native_value(self) -> float | None:
@@ -122,7 +123,9 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
     ``GALEVO_WRITES_ENABLED`` until the contract is exercised.
     """
 
-    _attr_mode = NumberMode.BOX
+    # Slider for all item numbers — the controller's own bounds are
+    # symmetric around 0 for offsets (e.g. -7..+7), so 0 sits centered.
+    _attr_mode = NumberMode.SLIDER
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
