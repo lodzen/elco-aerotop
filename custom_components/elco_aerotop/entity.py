@@ -2,11 +2,43 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import ElcoDataUpdateCoordinator
+
+
+def async_setup_platform_entities(
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    create_entities: Callable[[ElcoDataUpdateCoordinator, AddEntitiesCallback], None],
+) -> None:
+    """Create entities now, or lazily once the first gateway data arrives.
+
+    The integration fetches its initial Remocon snapshot in the background so
+    Home Assistant startup is not blocked; platform setup therefore runs this
+    helper, which defers entity creation until ``coordinator.data`` exists.
+    """
+    coordinator: ElcoDataUpdateCoordinator = entry.runtime_data
+    if coordinator.data is not None:
+        create_entities(coordinator, async_add_entities)
+        return
+
+    @callback
+    def _on_first_update() -> None:
+        if coordinator.data is None:
+            return
+        remove_listener()
+        create_entities(coordinator, async_add_entities)
+
+    remove_listener = coordinator.async_add_listener(_on_first_update)
+    entry.async_on_unload(remove_listener)
 
 
 class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):

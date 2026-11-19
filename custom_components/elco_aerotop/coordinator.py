@@ -38,6 +38,7 @@ from .const import (
     MENU_ITEM_HYBRID_IDS,
     MENU_ITEM_SLP_IDS,
     MENU_ITEM_VMC_IDS,
+    SYSTEM_TYPE_GALEVO,
 )
 from .control_mapping import ZONE_MODE_AUTOMATIC
 from .holiday import current_holiday
@@ -52,6 +53,11 @@ _TRANSIENT_RECOVERY_DELAYS = (60, 300, 900)
 _DEFAULT_RATE_LIMIT_DELAY = 300
 _TRANSIENT_RESPONSE_STATUSES = frozenset({408, 500, 502, 503, 504})
 _OPTIONAL_CIRCUIT_STATUSES = frozenset({502, 503, 504})
+
+
+async def _null_probe() -> None:
+    """Return nothing; keeps the discovery gather positional for skipped probes."""
+    return None
 
 
 class _OptionalDiscoveryAborted(Exception):
@@ -87,6 +93,10 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         self._command_lock = asyncio.Lock()
         self._gateway_lock = asyncio.Lock()
         self._discovery_lock = asyncio.Lock()
+        # Pending holiday window edited by the date entities; only sent to
+        # the gateway when the holiday switch is turned on.
+        self._pending_holiday_start: date | None = None
+        self._pending_holiday_end: date | None = None
         self._slow_discovery = ReadOnlyDiscovery()
         self._slow_discovery_poll_count = max(
             1,
@@ -235,6 +245,10 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
 
         status: dict[str, str] = {}
         programs, _has_cooling = self._schedule_programs(data)
+        # Match the core read path and entity registration: every family that
+        # is not Galevo follows the BSB protocol, so a missing or unparsable
+        # systemType keeps BSB discovery running instead of dropping it.
+        is_bsb = self._system_type() != SYSTEM_TYPE_GALEVO
 
         # These cloud JSON reads populate entities during setup. Run them together so
         # a Remocon response that legitimately takes close to a minute does not make
@@ -256,14 +270,16 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 self.api.async_get_plant_header(),
                 status,
             ),
+            # The GetUserData endpoint answers 200 with an empty payload on
+            # the live Galevo gateway (verified 2026-11-19) — BSB-only probe.
             self._async_optional_probe(
                 "plant_user_data",
-                self.api.async_get_plant_user_data(),
+                (self.api.async_get_plant_user_data() if is_bsb else _null_probe()),
                 status,
             ),
             self._async_optional_probe(
                 "bsb_boiler_data",
-                self.api.async_get_bsb_boiler_data(),
+                (self.api.async_get_bsb_boiler_data() if is_bsb else _null_probe()),
                 status,
             ),
             self._async_optional_probe(
@@ -272,19 +288,25 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 status,
             ),
         )
+        if not is_bsb:
+            status["bsb_boiler_data"] = "unsupported:system_family"
+            status["plant_user_data"] = "unsupported:system_family"
         for group_name in BSB_DISCOVERY_GROUPS:
-            status[f"bsb_points:{group_name}"] = "deferred:background"
-        status["bsb_points"] = "deferred:background"
+            status[f"bsb_points:{group_name}"] = (
+                "deferred:background" if is_bsb else "unsupported:system_family"
+            )
+        status["bsb_points"] = "deferred:background" if is_bsb else "unsupported:system_family"
         for program in programs:
             status[f"schedule:{program}"] = "deferred:background"
-        status["metering"] = (
-            "deferred:background"
-            if self._features.get("hasMetering", False)
-            else "unsupported:feature"
-        )
+        if self._features.get("hasMetering", False):
+            status["metering"] = "deferred:background" if is_bsb else "unsupported:system_family"
+        else:
+            status["metering"] = "unsupported:feature"
         status["maintenance"] = "deferred:background"
         status["automated_monitoring"] = "deferred:background"
-        status["bsb_plant_data"] = "deferred:background"
+        status["bsb_plant_data"] = "deferred:background" if is_bsb else "unsupported:system_family"
+        status["bus_devices"] = "unsupported:bsb_system" if is_bsb else "deferred:background"
+        status["energy_sequences"] = "unsupported:bsb_system" if is_bsb else "deferred:background"
         status["menu_items"] = "deferred:background"
 
         return ReadOnlyDiscovery(
@@ -332,8 +354,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             available_bsb_groups = 0
             programs, has_cooling = self._schedule_programs(source_data)
             supported_bsb_groups = len(BSB_DISCOVERY_GROUPS)
+            is_bsb = self._system_type() != SYSTEM_TYPE_GALEVO
             for group_name, addresses in BSB_DISCOVERY_GROUPS.items():
                 if group_name.startswith("energy_history_"):
+                    continue
+                if not is_bsb:
+                    status[f"bsb_points:{group_name}"] = "unsupported:system_family"
+                    supported_bsb_groups -= 1
                     continue
                 source_outlet_minimum = group_name == "source_outlet_minimum"
                 if (group_name == "cooling_2" and not has_cooling) or (
@@ -356,68 +383,121 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             # Remocon forwards several of these reads to the controller bus. Keep
             # every BSB and schedule request serialized to avoid gateway contention.
             schedules: dict[str, Any] = {}
+            get_schedule = (
+                self.api.async_get_schedule if is_bsb else self.api.async_get_galevo_time_prog
+            )
             for program in programs:
                 schedule = await self._async_serialized_optional_probe(
                     f"schedule:{program}",
-                    lambda program=program: self.api.async_get_schedule(program),
+                    lambda program=program: get_schedule(program),
                     status,
                 )
                 if schedule is not None:
                     schedules[program] = schedule
 
-            if self._features.get("hasMetering", False):
+            features = self._features
+            if is_bsb and features is not None and features.get("hasMetering", False):
                 metering = await self._async_serialized_optional_probe(
                     "metering",
                     lambda: self.api.async_get_metering(
-                        self._features,
+                        features,
                         has_cooling=has_cooling,
                     ),
                     status,
                 )
             else:
                 metering = None
-                status["metering"] = "unsupported:feature"
-            maintenance = await self._async_serialized_optional_probe(
-                "maintenance",
-                self.api.async_get_maintenance,
-                status,
-            )
-            automated_monitoring = await self._async_serialized_optional_probe(
-                "automated_monitoring",
-                self.api.async_get_automated_monitoring,
-                status,
-            )
-            bsb_boiler_data = await self._async_serialized_optional_probe(
-                "bsb_boiler_data",
-                self.api.async_get_bsb_boiler_data,
-                status,
-            )
-            bsb_plant_data = await self._async_serialized_optional_probe(
-                "bsb_plant_data",
-                self.api.async_get_bsb_plant_data,
-                status,
-            )
+                status["metering"] = (
+                    "unsupported:feature"
+                    if not (features or {}).get("hasMetering", False)
+                    else "unsupported:system_family"
+                )
+            if is_bsb:
+                maintenance = await self._async_serialized_optional_probe(
+                    "maintenance",
+                    self.api.async_get_maintenance,
+                    status,
+                )
+                automated_monitoring = await self._async_serialized_optional_probe(
+                    "automated_monitoring",
+                    self.api.async_get_automated_monitoring,
+                    status,
+                )
+            else:
+                maintenance = None
+                automated_monitoring = None
+                status["maintenance"] = "unsupported:system_family"
+                status["automated_monitoring"] = "unsupported:system_family"
+            if is_bsb:
+                bsb_boiler_data = await self._async_serialized_optional_probe(
+                    "bsb_boiler_data",
+                    self.api.async_get_bsb_boiler_data,
+                    status,
+                )
+                bsb_plant_data = await self._async_serialized_optional_probe(
+                    "bsb_plant_data",
+                    self.api.async_get_bsb_plant_data,
+                    status,
+                )
+            else:
+                bsb_boiler_data = None
+                bsb_plant_data = None
+                status["bsb_boiler_data"] = "unsupported:system_family"
+                status["bsb_plant_data"] = "unsupported:system_family"
+            if is_bsb:
+                bus_devices: list[dict[str, Any]] = []
+                status["bus_devices"] = "unsupported:bsb_system"
+            else:
+                devices = await self._async_serialized_optional_probe(
+                    "bus_devices",
+                    self.api.async_get_galevo_bus_devices,
+                    status,
+                )
+                bus_devices = devices if isinstance(devices, list) else []
+            energy_sequences: list[dict[str, Any]] = []
+            if is_bsb:
+                status["energy_sequences"] = "unsupported:bsb_system"
+            else:
+                sequences = await self._async_serialized_optional_probe(
+                    "energy_sequences",
+                    self.api.async_get_galevo_consumption_sequences,
+                    status,
+                )
+                if isinstance(sequences, list):
+                    energy_sequences = sequences
             menu_items: dict[str, dict[str, Any]] = {}
-            if self._system_type() == 5:
+            if is_bsb:
                 status["menu_items"] = "unsupported:bsb_system"
             else:
-                available_menu_items = 0
                 menu_item_ids = self._menu_item_ids()
-                for item_id in menu_item_ids:
-                    returned_items = await self._async_serialized_optional_probe(
-                        f"menu_item:{item_id}",
-                        lambda item_id=item_id: self.api.async_get_menu_items((item_id,)),
-                        status,
-                    )
-                    if isinstance(returned_items, dict):
-                        menu_items.update(returned_items)
-                        available_menu_items += 1
-                if available_menu_items == len(menu_item_ids):
+                # Galevo omits unsupported IDs from a batched response, so a
+                # single request covers the whole catalog. Fall back to
+                # per-item reads for families that reject the batch.
+                batched = await self._async_serialized_optional_probe(
+                    "menu_items",
+                    lambda: self.api.async_get_menu_items(menu_item_ids),
+                    status,
+                )
+                if isinstance(batched, dict) and batched:
+                    menu_items.update(batched)
                     status["menu_items"] = "available"
-                elif available_menu_items:
-                    status["menu_items"] = "partially_available"
                 else:
-                    status["menu_items"] = "unavailable"
+                    available_menu_items = 0
+                    for item_id in menu_item_ids:
+                        returned_items = await self._async_serialized_optional_probe(
+                            f"menu_item:{item_id}",
+                            lambda item_id=item_id: self.api.async_get_menu_items((item_id,)),
+                            status,
+                        )
+                        if isinstance(returned_items, dict):
+                            menu_items.update(returned_items)
+                            available_menu_items += 1
+                    if available_menu_items == len(menu_item_ids):
+                        status["menu_items"] = "available"
+                    elif available_menu_items:
+                        status["menu_items"] = "partially_available"
+                    else:
+                        status["menu_items"] = "unavailable"
 
             # Annual history is intentionally last. Some controllers reject an
             # oversized energy request slowly; this ordering prevents that
@@ -425,6 +505,9 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             # BSB plant data. Each eight-address slot is isolated as well.
             for group_name, addresses in BSB_DISCOVERY_GROUPS.items():
                 if not group_name.startswith("energy_history_"):
+                    continue
+                if not is_bsb:
+                    status[f"bsb_points:{group_name}"] = "unsupported:system_family"
                     continue
                 group = await self._async_serialized_optional_probe(
                     f"bsb_points:{group_name}",
@@ -436,7 +519,9 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     bsb_points.update(group)
                     available_bsb_groups += 1
 
-            if available_bsb_groups == supported_bsb_groups:
+            if not is_bsb:
+                status["bsb_points"] = "unsupported:system_family"
+            elif available_bsb_groups == supported_bsb_groups:
                 status["bsb_points"] = "available"
             elif available_bsb_groups:
                 status["bsb_points"] = "partially_available"
@@ -453,6 +538,8 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 bsb_points=bsb_points,
                 bsb_plant_data=(bsb_plant_data if isinstance(bsb_plant_data, dict) else {}),
                 menu_items=menu_items,
+                bus_devices=bus_devices,
+                energy_sequences=energy_sequences,
                 probe_status=status,
             )
             current = self.data
@@ -514,14 +601,21 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     self._features = await self.api.async_get_features()
                 if self._zone_numbers is None:
                     self._zone_numbers = await self.api.async_get_zone_numbers(self._features)
-                data = await self.api.async_get_data(self._zone_numbers, use_cache=True)
 
                 status = dict(self._slow_discovery.probe_status)
-                system_items = await self._async_optional_probe(
-                    "system_items",
-                    self.api.async_get_system_items(self._features, self._zone_numbers),
-                    status,
-                )
+                if self._system_type() == SYSTEM_TYPE_GALEVO:
+                    data, system_items = await self.api.async_get_galevo_data(
+                        self._features,
+                        self._zone_numbers,
+                    )
+                    status["system_items"] = "available"
+                else:
+                    data = await self.api.async_get_data(self._zone_numbers, use_cache=True)
+                    system_items = await self._async_optional_probe(
+                        "system_items",
+                        self.api.async_get_system_items(self._features, self._zone_numbers),
+                        status,
+                    )
 
                 if self._skip_slow_discovery_once:
                     pass
@@ -542,6 +636,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 features_response=self.api.last_features_response,
                 system_items=system_items or {},
                 probe_status=status,
+                system_type=self._system_type(),
             )
             updated_data = replace(data, discovery=discovery)
             self._transient_failure_count = 0
@@ -577,6 +672,12 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         if self._zone_numbers is None:
             self._zone_numbers = await self.api.async_get_zone_numbers()
         requested_zones = zone_numbers or self._zone_numbers
+        if self._system_type() == SYSTEM_TYPE_GALEVO:
+            data, _system_items = await self.api.async_get_galevo_data(
+                self._features or {},
+                requested_zones,
+            )
+            return data
         return await self.api.async_get_data(requested_zones, use_cache=False)
 
     async def _async_fresh_plant_data(self) -> ElcoData:
@@ -693,11 +794,17 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         description: str,
     ) -> HomeAssistantError | None:
         """Run one write and verify state instead of replaying an ambiguous failure."""
+        _LOGGER.debug("Remocon write started: %s", description)
         try:
             await write()
         except (ElcoConnectionError, ElcoResponseError) as err:
             if not self._is_ambiguous_write_error(err):
                 raise
+            _LOGGER.debug(
+                "Remocon write %s returned an ambiguous error; reconciling: %s",
+                description,
+                err,
+            )
             if isinstance(err, ElcoResponseError) and err.retry_after is not None:
                 raise HomeAssistantError(
                     f"{description} may have been applied, but Remocon requested a delay before "
@@ -924,6 +1031,243 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 raise ConfigEntryAuthFailed from err
             except ElcoApiError as err:
                 raise HomeAssistantError(str(err)) from err
+
+    async def async_set_plant_mode(self, mode: int) -> None:
+        """Set the plant mode via R2 ``PlantHome/SetData``.
+
+        Live evidence 2026-11-19: the mobile ``plantData/{gw}/mode`` route
+        acknowledges with ``{"success": true}`` but leaves ``PlantMode``
+        unchanged on this gateway. The R2 contract captured in
+        ``post_planthome_setdata.json`` is the verified write path.
+        """
+        if self._system_type() != SYSTEM_TYPE_GALEVO:
+            raise HomeAssistantError("Plant mode writes are only defined for Galevo gateways")
+        current = self.data.discovery.system_item("PlantMode")
+        old_mode = current.get("value") if current else None
+        if not isinstance(old_mode, int | float):
+            raise HomeAssistantError("Remocon did not return the current plant mode")
+        prev_items = [
+            self._r2_item_shape(item)
+            for item in self.data.discovery.system_items.values()
+            if isinstance(item, dict)
+        ]
+        view_model = self._galevo_plant_view_model(mode)
+        _LOGGER.debug(
+            "Plant mode write requested: new=%s old=%s viewModel=%r",
+            mode,
+            old_mode,
+            view_model,
+        )
+        try:
+            await self.api.async_set_galevo_plant_mode(
+                mode,
+                features=self._features or {},
+                prev_items=prev_items,
+                view_model=view_model,
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        except ElcoAuthenticationError as err:
+            raise ConfigEntryAuthFailed from err
+        except ElcoApiError as err:
+            _LOGGER.debug("Plant mode write failed: %s", err, exc_info=True)
+            raise HomeAssistantError(str(err)) from err
+        _LOGGER.debug("Plant mode write to %s acknowledged", self.api.gateway_id)
+        await self.async_request_refresh()
+
+    def _r2_item_shape(self, item: dict[str, Any] | None) -> dict[str, Any]:
+        """Normalize a mobile data-item to the R2 item shape.
+
+        The R2 ``SetData``/``GetData`` contract (see
+        ``captures/har/post_planthome_setdata.json``) always carries
+        ``gatewayId``, ``expiresOn`` and ``options``/``optTexts`` lists;
+        the mobile ``dataItems/get`` shape omits ``gatewayId``/
+        ``expiresOn`` and uses ``null`` for absent option lists.
+        """
+        if not item:
+            return {}
+        shaped = dict(item)
+        shaped.setdefault("gatewayId", self.api.gateway_id)
+        shaped.setdefault("expiresOn", None)
+        shaped.setdefault("unit", None)
+        shaped["options"] = shaped.get("options") or []
+        shaped["optTexts"] = shaped.get("optTexts") or []
+        return shaped
+
+    def _galevo_plant_view_model(self, mode: int) -> dict[str, Any]:
+        """Rebuild the semantic viewModel fields the web app sends.
+
+        Mirrors ``captures/har/post_planthome_setdata.json``: mode flags
+        derive from the requested ``plantMode``; zone fields come from the
+        current items; pure display strings are intentionally omitted.
+        """
+        discovery = self.data.discovery
+        zone_number = next(iter(self.data.zones), 1)
+
+        def item(item_id: str, zone: int = 0) -> dict[str, Any]:
+            return discovery.system_item(item_id, zone) or {}
+
+        def item_value(item_id: str, zone: int = 0, default: Any = None) -> Any:
+            return item(item_id, zone).get("value", default)
+
+        raw_zone_mode = item_value("ZoneMode", zone_number)
+        zone_mode = int(raw_zone_mode) if isinstance(raw_zone_mode, int | float) else 2
+
+        plant_item = item("PlantMode")
+        options = plant_item.get("options") or []
+        labels = plant_item.get("optTexts") or []
+        label = (
+            str(labels[options.index(mode)])
+            if mode in options and options.index(mode) < len(labels)
+            else str(mode)
+        )
+
+        zone_name = "Zone #"
+        virt_operative = 0
+        for zone in (self._features or {}).get("zones") or []:
+            if zone.get("num") == zone_number:
+                zone_name = zone.get("name") or zone_name
+                virt_operative = (zone.get("virtInfo") or {}).get("thermoregModeHeat") or 0
+
+        holiday_item = item("Holiday")
+        deroga_item = item("ZoneDeroga", zone_number)
+        fireplace_item = item("ZoneFireplace", zone_number)
+
+        desired = self._r2_item_shape(item("ZoneDesiredTemp", zone_number)) or None
+
+        return {
+            "plantModeAsText": label,
+            "zoneMode": zone_mode,
+            "zoneNumber": zone_number,
+            "zoneNumberAsText": zone_name,
+            "holidayExpiresOn": holiday_item.get("expiresOn"),
+            "holidayExpiresOnAsText": "",
+            "isZoneFireplace": bool(item_value("ZoneFireplace", zone_number)),
+            "fireplaceExpiresOn": fireplace_item.get("expiresOn"),
+            "isAccessRequestAvailable": False,
+            "isAccessRequestGranted": False,
+            "isProposedDeroga": False,
+            "isZoneDeroga": bool(item_value("ZoneDeroga", zone_number)),
+            "isPilotOn": bool(item_value("IsZonePilotOn", zone_number)),
+            "derogaTemp": item_value("ZoneDeroga", zone_number, 0),
+            "derogaExpiresOn": deroga_item.get("expiresOn"),
+            "desiredTemp": desired,
+            "antifreezeTemp": item_value("ZoneAntiFreezeTemp", zone_number, 0),
+            "roomTemp": item_value("ZoneMeasuredTemp", zone_number, 0),
+            "comfortTemp": item_value("ZoneComfortTemp", zone_number, 0),
+            "reducedTemp": item_value("ZoneEconomyTemp", zone_number, 0),
+            "isOptimumStartRunning": False,
+            "dhwCardVisible": not (self._features or {}).get("dhwHidden", False),
+            "advSettingsCardVisible": True,
+            "virtOperativeMode": virt_operative,
+            "plantModeEval": mode,
+            "isWinter": mode == 1,
+            "isSummer": mode == 0,
+            # Flags mirror the ePlantMode options 1:1 — "Heating" is the
+            # "Heating only" mode (2), not "any heating". Sending
+            # isWinter+isHeating together made SetData return HTTP 500.
+            "isHeating": mode == 2,
+            "isCooling": mode in (3, 4),
+            "isOff": mode == 5,
+            "isHoliday": False,
+            "isZoneManual": zone_mode == 2,
+            "isZoneOff": zone_mode in (0, 1),
+            "isZoneProgram": zone_mode == 3,
+        }
+
+    def set_pending_holiday(self, *, start: date | None, end: date | None) -> None:
+        """Store the holiday window edited via the date entities (not sent)."""
+        if start is not None:
+            self._pending_holiday_start = start
+        if end is not None:
+            self._pending_holiday_end = end
+
+    @property
+    def pending_holiday_start(self) -> date:
+        return self._pending_holiday_start or date.today()
+
+    @property
+    def pending_holiday_end(self) -> date:
+        return self._pending_holiday_end or (date.today() + timedelta(days=7))
+
+    async def async_set_galevo_holiday(self) -> None:
+        """Activate the plant holiday for the pending window.
+
+        APK contract (PlantDataProxy.setHoliday): ``ChangeValueDto`` of
+        local date-times, new=start, old=end. Gated by
+        ``GALEVO_WRITES_ENABLED`` in the API client.
+        """
+        if self._system_type() != SYSTEM_TYPE_GALEVO:
+            raise HomeAssistantError("Holiday scheduling is only defined for Galevo gateways")
+        start, end = self.pending_holiday_start, self.pending_holiday_end
+        if end < start:
+            raise HomeAssistantError("Holiday end must not precede its start")
+        _LOGGER.debug("Holiday activation requested: %s -> %s", start, end)
+        try:
+            await self.api.async_set_galevo_holiday(
+                start=f"{start.isoformat()}T00:00:00",
+                end=f"{end.isoformat()}T23:59:59",
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        except ElcoAuthenticationError as err:
+            raise ConfigEntryAuthFailed from err
+        except ElcoApiError as err:
+            raise HomeAssistantError(str(err)) from err
+        await self.async_request_refresh()
+
+    async def async_reset_galevo_holiday(self) -> None:
+        """Cancel the plant holiday (``PlantDataProxy.resetHoliday``)."""
+        if self._system_type() != SYSTEM_TYPE_GALEVO:
+            raise HomeAssistantError("Holiday scheduling is only defined for Galevo gateways")
+        _LOGGER.debug("Holiday cancellation requested")
+        try:
+            await self.api.async_reset_galevo_holiday(
+                now=datetime.now().replace(microsecond=0).isoformat(),
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        except ElcoAuthenticationError as err:
+            raise ConfigEntryAuthFailed from err
+        except ElcoApiError as err:
+            raise HomeAssistantError(str(err)) from err
+        await self.async_request_refresh()
+
+    async def async_set_galevo_data_item(
+        self,
+        item_key: str,
+        value: float,
+    ) -> None:
+        """Set one Galevo data item (``dataItems/{gw}/set``, APK contract).
+
+        ``item_key`` is the ``<id>:<zone>`` key in the merged system-item
+        map. Only wired for items the plant marks writable; the request
+        stays blocked by ``GALEVO_WRITES_ENABLED`` inside the API client.
+        """
+        if self._system_type() != SYSTEM_TYPE_GALEVO:
+            raise HomeAssistantError("Data item writes are only defined for Galevo gateways")
+        item = self.data.discovery.system_items.get(item_key)
+        if item is None:
+            raise HomeAssistantError(f"Data item {item_key} is not available")
+        if item.get("readOnly"):
+            raise HomeAssistantError(f"Data item {item_key} is read-only")
+        _LOGGER.debug(
+            "Data item write requested: %s value=%r (item=%r)",
+            item_key,
+            value,
+            item,
+        )
+        try:
+            await self.api.async_set_galevo_data_item(item, value)
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        except ElcoAuthenticationError as err:
+            raise ConfigEntryAuthFailed from err
+        except ElcoApiError as err:
+            _LOGGER.debug("Data item %s write failed: %s", item_key, err, exc_info=True)
+            raise HomeAssistantError(str(err)) from err
+        _LOGGER.debug("Data item %s write acknowledged", item_key)
+        await self.async_request_refresh()
 
     async def async_set_zone_mode(self, zone_number: int, mode: int) -> None:
         """Safely update a heating-zone operating mode."""

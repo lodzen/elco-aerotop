@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .coordinator import ElcoDataUpdateCoordinator
-from .entity import ElcoAerotopEntity
+from .entity import ElcoAerotopEntity, async_setup_platform_entities
 from .holiday import current_holiday, has_holiday_source
 
 
@@ -42,7 +42,13 @@ async def async_setup_entry(
     async_add_entities,
 ) -> None:
     """Set up one cancel button for each capable BSB zone."""
-    coordinator: ElcoDataUpdateCoordinator = entry.runtime_data
+    async_setup_platform_entities(entry, async_add_entities, _create_entities)
+
+
+def _create_entities(
+    coordinator: ElcoDataUpdateCoordinator,
+    async_add_entities,
+) -> None:
     async_add_entities(
         ElcoCancelHolidayButton(coordinator, zone_number)
         for zone_number, zone in coordinator.data.zones.items()
