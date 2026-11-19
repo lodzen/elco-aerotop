@@ -54,10 +54,14 @@ SYSTEM_TYPE_AC: Final = 10
 # Galevo-family mobile reads (APK ZoneService/PlantService/DataItemService).
 GALEVO_ZONE_PATH: Final = "/api/v2/remote/zones/{gateway_id}/{zone}"
 GALEVO_HOME_DATA_PATH: Final = "/R2/PlantHome/GetData/{gateway_id}"
+# R2 PlantHome/SetData: browser-app write path, verified in the HAR capture —
+# kept documented (see docs/protocol.md) though plant-mode writes now use the
+# mobile plantData/{gw}/mode route verified live on 2026-11-19.
 GALEVO_SET_DATA_PATH: Final = "/R2/PlantHome/SetData/{gateway_id}?umsys=si"
 # Galevo write paths (mobile API). Contracts verified from the APK proxies:
-# ChangeValueDto {newValue, oldValue} for scalars/enums, TemperaturesDto
-# {comfort, economy} for temperature pairs, SetDataItemsRequest
+# ChangeValueDto {new, old} for scalars/enums (wire names from
+# ChangeValueDtoSerializer, not the Kotlin property names), TemperaturesDto
+# {comf, econ} for temperature pairs, SetDataItemsRequest
 # {features, items: [DataItemDto + prevValue + prevExpiresOn]} for
 # dataItems/set (DataItemProxy/ZoneProxy/PlantDataProxy).
 GALEVO_DATA_ITEMS_SET_PATH: Final = "/api/v2/remote/dataItems/{gateway_id}/set"
@@ -70,7 +74,7 @@ GALEVO_DHW_TIME_PROG_TEMPERATURES_PATH: Final = (
     "/api/v2/remote/plantData/{gateway_id}/dhwTimeProgTemperatures"
 )
 # Holiday scheduling (PlantDataProxy.setHoliday/resetHoliday): ChangeValueDto
-# of LocalDateTime — newValue=start, oldValue=end; reset sends oldValue only.
+# of LocalDateTime — new=start, old=end; reset sends old only.
 GALEVO_HOLIDAY_PATH: Final = "/api/v2/remote/plantData/{gateway_id}/holiday"
 # Consumption time series (ReportProxy.consKwhSequences): usages are
 # comma-joined eEnergyUsageDto names; response items {k, p, v} carry

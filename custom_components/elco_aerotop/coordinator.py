@@ -1033,12 +1033,12 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 raise HomeAssistantError(str(err)) from err
 
     async def async_set_plant_mode(self, mode: int) -> None:
-        """Set the plant mode via R2 ``PlantHome/SetData``.
+        """Set the plant mode via mobile ``plantData/{gw}/mode``.
 
-        Live evidence 2026-11-19: the mobile ``plantData/{gw}/mode`` route
-        acknowledges with ``{"success": true}`` but leaves ``PlantMode``
-        unchanged on this gateway. The R2 contract captured in
-        ``post_planthome_setdata.json`` is the verified write path.
+        Live-verified 2026-11-19 (Winter→Summer→Winter) — the route applies
+        the mode when the ``ChangeValueDto`` uses the ``new``/``old`` wire
+        names. The R2 ``PlantHome/SetData`` contract remains documented in
+        ``docs/protocol.md`` as the alternative write path.
         """
         if self._system_type() != SYSTEM_TYPE_GALEVO:
             raise HomeAssistantError("Plant mode writes are only defined for Galevo gateways")
@@ -1046,25 +1046,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         old_mode = current.get("value") if current else None
         if not isinstance(old_mode, int | float):
             raise HomeAssistantError("Remocon did not return the current plant mode")
-        prev_items = [
-            self._r2_item_shape(item)
-            for item in self.data.discovery.system_items.values()
-            if isinstance(item, dict)
-        ]
-        view_model = self._galevo_plant_view_model(mode)
         _LOGGER.debug(
-            "Plant mode write requested: new=%s old=%s viewModel=%r",
+            "Plant mode write requested: new=%s old=%s",
             mode,
             old_mode,
-            view_model,
         )
         try:
-            await self.api.async_set_galevo_plant_mode(
-                mode,
-                features=self._features or {},
-                prev_items=prev_items,
-                view_model=view_model,
-            )
+            await self.api.async_set_galevo_plant_mode(mode, old_mode=int(old_mode))
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
         except ElcoAuthenticationError as err:
@@ -1074,106 +1062,6 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             raise HomeAssistantError(str(err)) from err
         _LOGGER.debug("Plant mode write to %s acknowledged", self.api.gateway_id)
         await self.async_request_refresh()
-
-    def _r2_item_shape(self, item: dict[str, Any] | None) -> dict[str, Any]:
-        """Normalize a mobile data-item to the R2 item shape.
-
-        The R2 ``SetData``/``GetData`` contract (see
-        ``captures/har/post_planthome_setdata.json``) always carries
-        ``gatewayId``, ``expiresOn`` and ``options``/``optTexts`` lists;
-        the mobile ``dataItems/get`` shape omits ``gatewayId``/
-        ``expiresOn`` and uses ``null`` for absent option lists.
-        """
-        if not item:
-            return {}
-        shaped = dict(item)
-        shaped.setdefault("gatewayId", self.api.gateway_id)
-        shaped.setdefault("expiresOn", None)
-        shaped.setdefault("unit", None)
-        shaped["options"] = shaped.get("options") or []
-        shaped["optTexts"] = shaped.get("optTexts") or []
-        return shaped
-
-    def _galevo_plant_view_model(self, mode: int) -> dict[str, Any]:
-        """Rebuild the semantic viewModel fields the web app sends.
-
-        Mirrors ``captures/har/post_planthome_setdata.json``: mode flags
-        derive from the requested ``plantMode``; zone fields come from the
-        current items; pure display strings are intentionally omitted.
-        """
-        discovery = self.data.discovery
-        zone_number = next(iter(self.data.zones), 1)
-
-        def item(item_id: str, zone: int = 0) -> dict[str, Any]:
-            return discovery.system_item(item_id, zone) or {}
-
-        def item_value(item_id: str, zone: int = 0, default: Any = None) -> Any:
-            return item(item_id, zone).get("value", default)
-
-        raw_zone_mode = item_value("ZoneMode", zone_number)
-        zone_mode = int(raw_zone_mode) if isinstance(raw_zone_mode, int | float) else 2
-
-        plant_item = item("PlantMode")
-        options = plant_item.get("options") or []
-        labels = plant_item.get("optTexts") or []
-        label = (
-            str(labels[options.index(mode)])
-            if mode in options and options.index(mode) < len(labels)
-            else str(mode)
-        )
-
-        zone_name = "Zone #"
-        virt_operative = 0
-        for zone in (self._features or {}).get("zones") or []:
-            if zone.get("num") == zone_number:
-                zone_name = zone.get("name") or zone_name
-                virt_operative = (zone.get("virtInfo") or {}).get("thermoregModeHeat") or 0
-
-        holiday_item = item("Holiday")
-        deroga_item = item("ZoneDeroga", zone_number)
-        fireplace_item = item("ZoneFireplace", zone_number)
-
-        desired = self._r2_item_shape(item("ZoneDesiredTemp", zone_number)) or None
-
-        return {
-            "plantModeAsText": label,
-            "zoneMode": zone_mode,
-            "zoneNumber": zone_number,
-            "zoneNumberAsText": zone_name,
-            "holidayExpiresOn": holiday_item.get("expiresOn"),
-            "holidayExpiresOnAsText": "",
-            "isZoneFireplace": bool(item_value("ZoneFireplace", zone_number)),
-            "fireplaceExpiresOn": fireplace_item.get("expiresOn"),
-            "isAccessRequestAvailable": False,
-            "isAccessRequestGranted": False,
-            "isProposedDeroga": False,
-            "isZoneDeroga": bool(item_value("ZoneDeroga", zone_number)),
-            "isPilotOn": bool(item_value("IsZonePilotOn", zone_number)),
-            "derogaTemp": item_value("ZoneDeroga", zone_number, 0),
-            "derogaExpiresOn": deroga_item.get("expiresOn"),
-            "desiredTemp": desired,
-            "antifreezeTemp": item_value("ZoneAntiFreezeTemp", zone_number, 0),
-            "roomTemp": item_value("ZoneMeasuredTemp", zone_number, 0),
-            "comfortTemp": item_value("ZoneComfortTemp", zone_number, 0),
-            "reducedTemp": item_value("ZoneEconomyTemp", zone_number, 0),
-            "isOptimumStartRunning": False,
-            "dhwCardVisible": not (self._features or {}).get("dhwHidden", False),
-            "advSettingsCardVisible": True,
-            "virtOperativeMode": virt_operative,
-            "plantModeEval": mode,
-            "isWinter": mode == 1,
-            "isSummer": mode == 0,
-            # Flags mirror the ePlantMode options 1:1 — "Heating" is the
-            # "Heating only" mode (2), not "any heating". Sending
-            # isWinter+isHeating together made SetData return HTTP 500.
-            "isHeating": mode == 2,
-            "isCooling": mode in (3, 4),
-            "isOff": mode == 5,
-            "isHoliday": False,
-            "isZoneManual": zone_mode == 2,
-            "isZoneOff": zone_mode in (0, 1),
-            "isZoneProgram": zone_mode == 3,
-        }
 
     def set_pending_holiday(self, *, start: date | None, end: date | None) -> None:
         """Store the holiday window edited via the date entities (not sent)."""

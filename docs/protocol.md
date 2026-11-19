@@ -134,6 +134,15 @@ for zones the plant marks hidden/virtual are absent. Zone payloads carry `mod`
 (`value` + `allowedOptions`, no labels), `room`, `desired`, `comf`/`econ` (`value`/`min`/`max`/`step`),
 `heat`, `der`, `antiFreezeTemp`, `heatReqAir` and `pilot`.
 
+**Single-item reads:** `dataItems/get` is also the per-item read — `items` may
+contain just one `{id, zn}` entry. `GetDataItemsRequestV2` requires `useCache`,
+`items` and `features` (`RemotePlantFeaturesDto`, from `Plant/Features`);
+`culture` is optional. Omitting `features` → HTTP 500 even with a valid token
+(live-verified 2026-11-19; token-only requests succeed with `features` included).
+There is no dedicated single-item endpoint and no `ReadDataPoints`-style route in
+the app — that path is the R2 web surface (`PlantMenuBsb`, BSB-only) which the
+integration uses for BSB address reads.
+
 **Live diff 2026-11-19 (Galevo gateway):** every item `PlantHome/GetData`
 returned was already present in the mobile `dataItems` response
 (`r2-only: 0`; the mobile answer additionally carried 19 items, e.g.
@@ -232,25 +241,41 @@ The R2 UI reaches several routes the app never calls (evidence: user-provided HA
 
 ### Galevo write contracts (APK `*Proxy` classes, verified from source)
 
-Scalar and enum writes serialize a `ChangeValueDto` `{newValue, oldValue}` so the
+Scalar and enum writes serialize a `ChangeValueDto` `{new, old}` so the
 gateway can reject concurrent changes; temperature pairs use
-`TemperaturesDto {comfort, economy}`:
+`TemperaturesDto {comf, econ}`:
 
 ```text
-POST /api/v2/remote/zones/{gw}/{n}/mode            {newValue: int, oldValue: int}   (eZoneMode)
-POST /api/v2/remote/zones/{gw}/{n}/temperatures    {newValue: {comfort, economy}, oldValue: {…}}
-POST /api/v2/remote/plantData/{gw}/mode            {newValue, oldValue}             (ePlantMode)
-POST /api/v2/remote/plantData/{gw}/dhwTemp         {newValue, oldValue}             (float)
-POST /api/v2/remote/plantData/{gw}/dhwMode         {newValue, oldValue}             (eDhwMode)
+POST /api/v2/remote/zones/{gw}/{n}/mode            {new: int, old: int}   (eZoneMode)
+POST /api/v2/remote/zones/{gw}/{n}/temperatures    {new: {comf, econ}, old: {…}}
+POST /api/v2/remote/plantData/{gw}/mode            {new, old}             (ePlantMode)
+POST /api/v2/remote/plantData/{gw}/dhwTemp         {new, old}             (float)
+POST /api/v2/remote/plantData/{gw}/dhwMode         {new, old}             (eDhwMode)
 POST /api/v2/remote/plantData/{gw}/dhwTimeProgTemperatures  ChangeValueDto<TemperaturesDto>
-POST /api/v2/remote/plantData/{gw}/holiday         {newValue: start, oldValue: end}  (set)
-POST /api/v2/remote/plantData/{gw}/holiday         {oldValue: now}                   (reset)
+POST /api/v2/remote/plantData/{gw}/holiday         {new: start, old: end}  (set)
+POST /api/v2/remote/plantData/{gw}/holiday         {old: now}              (reset)
 POST /api/v2/remote/dataItems/{gw}/set             {features: {…}, items: [SetDataItemDto]}
 ```
 
+**Wire names** (kotlinx `@SerialName`, verified in the decompiled
+`ChangeValueDtoSerializer`/`TemperaturesDto`/`SetDataItemDto`): the outer
+ChangeValueDto serializes its Kotlin properties `newValue`/`oldValue` as
+`new`/`old`, and TemperaturesDto serializes `comfort`/`economy` as
+`comf`/`econ`. Sending the long names makes the server deserialize nulls —
+live evidence 2026-11-19: `{newValue: {comfort: 52, economy: 40}, …}` on
+`dhwTimeProgTemperatures` → HTTP 500, and `{newValue: 0, oldValue: 1}` on
+`plantData/mode` → `{"success": true}` but no state change (an empty
+change deserializing to defaults). **Verified live 2026-11-19:** the
+corrected `{"new":{"comf":52,"econ":40},"old":{"comf":53,"econ":40}}` on
+`dhwTimeProgTemperatures` returned `{"success": true}` and a fresh
+`dataItems/get` confirmed `DhwTimeProgComfortTemp=52` (and `DhwTemp=52`).
+The R2 web app instead writes menu
+items via `POST /R2/PlantMenu/Submit/{gw}?userActivity=SaveOtherSettings`
+with `[{id: "U6_9_0", value: 52, prevValue: 53}]` (browser capture).
+
 Holiday uses the same `ChangeValueDto<LocalDateTime>` shape: `setHoliday(start, end)`
-serializes start as `newValue` and end as `oldValue` (ISO local date-times, no zone);
-`resetHoliday(now)` sends `oldValue` only. The `Holiday` data item (options [0,1])
+serializes start as `new` and end as `old` (ISO local date-times, no zone);
+`resetHoliday(now)` sends `old` only. The `Holiday` data item (options [0,1])
 mirrors the controller's holiday flag and backs `switch.<device>_holiday`, whose
 pending window is edited via `date.<device>_holiday_start`/`_holiday_end`.
 
@@ -290,17 +315,21 @@ German `optTexts` confirm PlantMode semantics: `0=Sommer (nur Brauchwasser)`,
 `1=Winter (Heizen und TWW)`, `2=Nur Heizung`, `3=Kühlen`, `5=AUS` — note option `4`
 is absent on this plant.
 
-**Live evidence 2026-11-19 — the mobile route is a no-op on this gateway:**
-`POST /api/v2/remote/plantData/{gw}/mode` with the exact APK contract
-(`{"newValue":0,"oldValue":1}`, verified in `PlantDataProxy.setPlantMode` →
-`ChangeValueDto` with `ePlantMode.getValue()`; `ePlantMode` = Summer 0, Winter 1,
-HeatingOnly 2, Cooling 3, CoolingOnly 4, Off 5) returned HTTP 200
-`{"success": true}` yet a fresh `dataItems/get` (`useCache: false`) 14 s later
-still reported `PlantMode=1`. The integration therefore uses this R2
-`SetData` route for plant-mode writes; the mobile route stays documented
-but is not used. `viewModel` carries the semantic fields (zone context,
-temperature items, mode flags); pure display strings (bottomSheet/weather
-icon texts) are omitted as they cannot affect the server-side command.
+**Live evidence 2026-11-19 — the mobile mode route works with the correct
+wire keys:** `POST /api/v2/remote/plantData/{gw}/mode` with the Kotlin
+*property* names (`{"newValue":0,"oldValue":1}`) returned HTTP 200
+`{"success": true}` yet a fresh `dataItems/get` 14 s later still reported
+`PlantMode=1` — the server deserialized an empty change. With the real
+wire names (`{"new":0,"old":1}` — `ePlantMode`: Summer 0, Winter 1,
+HeatingOnly 2, Cooling 3, CoolingOnly 4, Off 5) the same route applies the
+mode: `{"success": true}` followed by `PlantMode=0`, verified both
+directions (Winter→Summer→Winter) on 2026-11-19. The integration uses this
+mobile route for plant-mode writes; the R2 `PlantHome/SetData` contract
+(`{features, prevItems, viewModel}` → `changedItems`) remains documented
+below as the browser-app alternative. `viewModel` carries the semantic fields
+(zone context, temperature items, mode flags); pure display strings
+(bottomSheet/weather icon texts) are omitted as they cannot affect the
+server-side command.
 
 **viewModel flag semantics — live-verified the hard way (2026-11-19):**
 `isWinter`/`isSummer`/`isHeating`/`isCooling`/`isOff` are 1:1 mirrors of the

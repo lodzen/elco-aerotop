@@ -8,7 +8,7 @@ guard fires before any HTTP request leaves the client.
 from __future__ import annotations
 
 import pytest
-from test_api import FakeSession
+from test_api import FakeResponse, FakeSession
 
 from custom_components.elco_aerotop import api as api_module
 from custom_components.elco_aerotop.api import ElcoApiClient
@@ -116,7 +116,7 @@ async def test_galevo_writes_raise_before_any_request(
     client = _client(monkeypatch)
 
     with pytest.raises(ValueError, match="Galevo writes are disabled"):
-        await client.async_set_galevo_plant_mode(0, features={}, prev_items=[])
+        await client.async_set_galevo_plant_mode(0, old_mode=1)
     with pytest.raises(ValueError, match="Galevo writes are disabled"):
         await client.async_set_galevo_zone_mode(1, 2, old_mode=3)
     with pytest.raises(ValueError, match="Galevo writes are disabled"):
@@ -165,3 +165,107 @@ async def test_galevo_zone_temperature_dispatch_validates(
         await client.async_set_zone_temperatures(zone, comfort=15, reduced=16)
 
     assert client._session.calls == []
+
+
+def _write_client() -> tuple[ElcoApiClient, FakeSession]:
+    """Client whose fake session answers mobile login + one write ack."""
+    session = FakeSession(
+        [
+            FakeResponse(json_data={"token": "t"}),
+            FakeResponse(json_data={"ok": True, "data": {}}),
+        ]
+    )
+    return (
+        ElcoApiClient(session, "user", "pass", "GW", "https://example.test"),
+        session,
+    )
+
+
+@pytest.mark.asyncio
+async def test_galevo_change_value_uses_new_old_wire_names() -> None:
+    """ChangeValueDto serializes as {new, old} (ChangeValueDtoSerializer),
+    not the Kotlin property names newValue/oldValue — the long names made
+    the gateway return HTTP 500 live on 2026-11-19."""
+    client, session = _write_client()
+
+    await client.async_set_galevo_dhw_temp(52, old_temperature=53)
+
+    method, url, kwargs = session.calls[-1]
+    assert method == "POST"
+    assert url.endswith("/api/v2/remote/plantData/GW/dhwTemp")
+    assert kwargs["json"] == {"new": 52, "old": 53}
+
+
+@pytest.mark.asyncio
+async def test_galevo_dhw_timeprog_uses_new_old_and_comf_econ() -> None:
+    """The TemperaturesDto pair serializes as comf/econ inside new/old."""
+    client, session = _write_client()
+
+    await client.async_set_galevo_dhw_timeprog_temperatures(
+        comfort=52, economy=40, old_comfort=53, old_economy=40
+    )
+
+    method, url, kwargs = session.calls[-1]
+    assert url.endswith(
+        "/api/v2/remote/plantData/GW/dhwTimeProgTemperatures"
+    )
+    assert kwargs["json"] == {
+        "new": {"comf": 52, "econ": 40},
+        "old": {"comf": 53, "econ": 40},
+    }
+
+
+@pytest.mark.asyncio
+async def test_galevo_zone_temperatures_uses_comf_econ() -> None:
+    """Zone temperature writes share TemperaturesDto serialization."""
+    client, session = _write_client()
+
+    await client.async_set_galevo_zone_temperatures(
+        1, comfort=21, economy=17, old_comfort=20, old_economy=16
+    )
+
+    method, url, kwargs = session.calls[-1]
+    assert url.endswith("/api/v2/remote/zones/GW/1/temperatures")
+    assert kwargs["json"] == {
+        "new": {"comf": 21, "econ": 17},
+        "old": {"comf": 20, "econ": 16},
+    }
+
+
+@pytest.mark.asyncio
+async def test_galevo_zone_and_dhw_mode_use_new_old() -> None:
+    """Scalar/enum writes use the same {new, old} ChangeValueDto shape."""
+    client, session = _write_client()
+
+    await client.async_set_galevo_zone_mode(1, 2, old_mode=3)
+    assert session.calls[-1][1].endswith("/api/v2/remote/zones/GW/1/mode")
+    assert session.calls[-1][2]["json"] == {"new": 2, "old": 3}
+
+    session.responses.append(FakeResponse(json_data={"ok": True, "data": {}}))
+    await client.async_set_galevo_dhw_mode(2, old_mode=1)
+    assert session.calls[-1][1].endswith("/api/v2/remote/plantData/GW/dhwMode")
+    assert session.calls[-1][2]["json"] == {"new": 2, "old": 1}
+
+    session.responses.append(FakeResponse(json_data={"ok": True, "data": {}}))
+    await client.async_set_galevo_plant_mode(0, old_mode=1)
+    assert session.calls[-1][1].endswith("/api/v2/remote/plantData/GW/mode")
+    assert session.calls[-1][2]["json"] == {"new": 0, "old": 1}
+
+
+@pytest.mark.asyncio
+async def test_galevo_holiday_uses_new_old() -> None:
+    """Holiday set sends new=start/old=end; reset sends old only."""
+    client, session = _write_client()
+
+    await client.async_set_galevo_holiday(
+        start="2026-12-20T00:00:00", end="2027-01-04T23:59:59"
+    )
+    assert session.calls[-1][1].endswith("/api/v2/remote/plantData/GW/holiday")
+    assert session.calls[-1][2]["json"] == {
+        "new": "2026-12-20T00:00:00",
+        "old": "2027-01-04T23:59:59",
+    }
+
+    session.responses.append(FakeResponse(json_data={"ok": True, "data": {}}))
+    await client.async_reset_galevo_holiday(now="2026-11-19T08:00:00")
+    assert session.calls[-1][2]["json"] == {"old": "2026-11-19T08:00:00"}

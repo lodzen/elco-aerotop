@@ -46,7 +46,7 @@ from .const import (
     GALEVO_GLOBAL_DATA_ITEM_IDS,
     GALEVO_HOLIDAY_PATH,
     GALEVO_HOME_DATA_PATH,
-    GALEVO_SET_DATA_PATH,
+    GALEVO_PLANT_MODE_PATH,
     GALEVO_SYSTEM_STATE_PATH,
     GALEVO_TIME_PROG_PATH,
     GALEVO_WRITES_ENABLED,
@@ -772,15 +772,19 @@ class ElcoApiClient:
         new_value: Any,
         old_value: Any,
     ) -> Any:
-        """POST a Galevo ``ChangeValueDto`` ({newValue, oldValue}) request.
+        """POST a Galevo ``ChangeValueDto`` ({new, old}) request.
 
         Contract verified from the APK proxies (ZoneProxy, PlantDataProxy):
         every scalar/enum write serializes both values so the gateway can
-        detect concurrent changes.
+        detect concurrent changes. The DTO's wire names are ``new``/``old``
+        (kotlinx @SerialName in ChangeValueDtoSerializer), not the Kotlin
+        property names ``newValue``/``oldValue`` — sending the long names
+        makes the server deserialize nulls (HTTP 500, or an acknowledged
+        no-op as observed for plantData/mode).
         """
         self._require_galevo_writes()
         _LOGGER.debug(
-            "Galevo write %s newValue=%r oldValue=%r",
+            "Galevo write %s new=%r old=%r",
             path,
             new_value,
             old_value,
@@ -788,7 +792,7 @@ class ElcoApiClient:
         payload = await self._request_mobile_payload(
             path,
             method="POST",
-            body={"newValue": new_value, "oldValue": old_value},
+            body={"new": new_value, "old": old_value},
         )
         return payload.get("data", payload) if isinstance(payload, dict) else payload
 
@@ -796,39 +800,20 @@ class ElcoApiClient:
         self,
         mode: int,
         *,
-        features: dict[str, Any],
-        prev_items: list[dict[str, Any]],
-        view_model: dict[str, Any] | None = None,
+        old_mode: int,
     ) -> Any:
-        """Set the plant mode via R2 ``POST PlantHome/SetData``.
+        """Set the plant mode via ``plantData/{gw}/mode`` (raw ePlantMode).
 
-        Live evidence 2026-11-19: the mobile ``plantData/{gw}/mode`` route
-        (APK ``PlantDataProxy.setPlantMode``, ``ChangeValueDto``) returned
-        ``{"success": true}`` on this gateway but left ``PlantMode``
-        unchanged — a silent no-op. The R2 ``SetData`` contract from
-        ``captures/har/post_planthome_setdata.json``
-        (``{features, prevItems, viewModel.plantMode}`` → ``changedItems``)
-        is the only route proven end-to-end to apply the mode.
-
-        ``viewModel`` should carry the semantic fields the web app sends
-        (zone context, temperature items, mode flags); pure display
-        strings (bottomSheet/weather icon texts) are omitted.
+        Live evidence 2026-11-19: with the correct ``new``/``old`` wire
+        names this route applies the mode — verified Winter→Summer→Winter
+        on a Galevo gateway. An earlier no-op observation was caused by
+        sending the Kotlin property names ``newValue``/``oldValue``, which
+        the server deserialized as an empty change.
         """
-        self._require_galevo_writes()
-        _LOGGER.debug(
-            "Galevo plant-mode SetData: plantMode=%s viewModel=%r prevItems=%d",
+        return await self._async_galevo_change_value(
+            GALEVO_PLANT_MODE_PATH.format(gateway_id=self.gateway_id),
             mode,
-            view_model,
-            len(prev_items),
-        )
-        return await self._request_json(
-            "POST",
-            GALEVO_SET_DATA_PATH.format(gateway_id=self.gateway_id),
-            body={
-                "features": features,
-                "prevItems": prev_items,
-                "viewModel": {"plantMode": mode, **(view_model or {})},
-            },
+            old_mode,
         )
 
     async def async_set_galevo_zone_mode(
@@ -860,15 +845,17 @@ class ElcoApiClient:
         """Set zone heating comfort/economy via ``zones/{gw}/{zn}/temperatures``.
 
         APK-verified contract (ZoneProxy.setTemperatures): both values go in
-        one ``TemperaturesDto`` pair wrapped in ``ChangeValueDto``.
+        one ``TemperaturesDto`` pair wrapped in ``ChangeValueDto``. The DTO
+        serializes its fields as ``comf``/``econ`` (kotlinx @SerialName), not
+        the full field names.
         """
         return await self._async_galevo_change_value(
             GALEVO_ZONE_TEMPERATURES_PATH.format(
                 gateway_id=self.gateway_id,
                 zone=zone_number,
             ),
-            {"comfort": comfort, "economy": economy},
-            {"comfort": old_comfort, "economy": old_economy},
+            {"comf": comfort, "econ": economy},
+            {"comf": old_comfort, "econ": old_economy},
         )
 
     async def async_set_galevo_dhw_temp(
@@ -906,11 +893,16 @@ class ElcoApiClient:
         old_economy: float,
     ) -> Any:
         """Set the scheduled DHW comfort/economy pair via
-        ``plantData/{gw}/dhwTimeProgTemperatures`` (APK-verified)."""
+        ``plantData/{gw}/dhwTimeProgTemperatures``.
+
+        APK-verified contract (PlantDataProxy.setDhwTimeProgTemperatures):
+        ``ChangeValueDto<TemperaturesDto>`` where the DTO serializes as
+        ``comf``/``econ`` (kotlinx @SerialName), not the full field names.
+        """
         return await self._async_galevo_change_value(
             GALEVO_DHW_TIME_PROG_TEMPERATURES_PATH.format(gateway_id=self.gateway_id),
-            {"comfort": comfort, "economy": economy},
-            {"comfort": old_comfort, "economy": old_economy},
+            {"comf": comfort, "econ": economy},
+            {"comf": old_comfort, "econ": old_economy},
         )
 
     async def async_set_galevo_holiday(
@@ -922,8 +914,8 @@ class ElcoApiClient:
         """Schedule the plant holiday via ``plantData/{gw}/holiday``.
 
         APK-verified contract (PlantDataProxy.setHoliday): the body is a
-        ``ChangeValueDto<LocalDateTime>`` where ``newValue`` carries the
-        start and ``oldValue`` the end, both ISO local date-times.
+        ``ChangeValueDto<LocalDateTime>`` where ``new`` carries the
+        start and ``old`` the end, both ISO local date-times.
         """
         return await self._async_galevo_change_value(
             GALEVO_HOLIDAY_PATH.format(gateway_id=self.gateway_id),
@@ -935,13 +927,14 @@ class ElcoApiClient:
         """Cancel the plant holiday (``PlantDataProxy.resetHoliday``).
 
         The APK serializes a ``ChangeValueDto<LocalDateTime>`` carrying only
-        ``oldValue`` (the cancellation instant); ``newValue`` stays absent.
+        ``old`` (the cancellation instant); ``new`` stays absent. Wire names
+        verified in ChangeValueDtoSerializer: ``new``/``old``.
         """
         self._require_galevo_writes()
         payload = await self._request_mobile_payload(
             GALEVO_HOLIDAY_PATH.format(gateway_id=self.gateway_id),
             method="POST",
-            body={"oldValue": now},
+            body={"old": now},
         )
         return payload.get("data", payload) if isinstance(payload, dict) else payload
 
