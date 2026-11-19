@@ -572,12 +572,17 @@ class ElcoApiClient:
         self,
         features: dict[str, Any],
         zone_numbers: list[int],
+        culture: str = "en",
     ) -> dict[str, dict[str, Any]]:
         """Fetch the safe scalar data items exposed by the mobile API.
 
         Requests the Galevo data-item catalog (``GALEVO_*_DATA_ITEM_IDS``).
         This is the authoritative read surface on Galevo; on BSB gateways it
         runs as an optional discovery probe — unsupported items are omitted.
+
+        ``culture`` controls server-side localization of text values such as
+        ``ZoneName``; the APK sends the app language
+        (``Locale.getDefault().getLanguage()``).
         """
         items = [{"id": item_id, "zn": 0} for item_id in GALEVO_GLOBAL_DATA_ITEM_IDS]
         items.extend(
@@ -592,7 +597,7 @@ class ElcoApiClient:
                 "useCache": False,
                 "items": items,
                 "features": features,
-                "culture": "en",
+                "culture": culture,
             },
             retry_auth=False,
             invalidate_auth=False,
@@ -1081,6 +1086,7 @@ class ElcoApiClient:
         self,
         features: dict[str, Any],
         zone_numbers: list[int],
+        culture: str = "en",
     ) -> tuple[ElcoData, dict[str, dict[str, Any]]]:
         """Fetch one complete Galevo snapshot: dataItems plus per-zone state.
 
@@ -1089,7 +1095,7 @@ class ElcoApiClient:
         """
         return await self._async_read_with_retry(
             "Galevo snapshot",
-            lambda: self._async_get_galevo_data_once(features, zone_numbers),
+            lambda: self._async_get_galevo_data_once(features, zone_numbers, culture),
             deadline_seconds=REQUEST_TIMEOUT * max(1, len(zone_numbers)),
         )
 
@@ -1097,6 +1103,7 @@ class ElcoApiClient:
         self,
         features: dict[str, Any],
         zone_numbers: list[int],
+        culture: str = "en",
     ) -> tuple[ElcoData, dict[str, dict[str, Any]]]:
         """Fetch one Galevo snapshot attempt: dataItems plus per-zone state.
 
@@ -1107,7 +1114,9 @@ class ElcoApiClient:
         per-zone R2 call was therefore dropped from the poll; R2 is only
         used for Features (cached) and ``SetData`` writes.
         """
-        system_items = await self.async_get_system_items(features, zone_numbers)
+        system_items = await self.async_get_system_items(
+            features, zone_numbers, culture=culture
+        )
         feature_zones: dict[int, dict[str, Any]] = {}
         for zone in features.get("zones", []):
             if not isinstance(zone, dict):

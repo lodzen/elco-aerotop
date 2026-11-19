@@ -136,12 +136,20 @@ for zones the plant marks hidden/virtual are absent. Zone payloads carry `mod`
 
 **Single-item reads:** `dataItems/get` is also the per-item read — `items` may
 contain just one `{id, zn}` entry. `GetDataItemsRequestV2` requires `useCache`,
-`items` and `features` (`RemotePlantFeaturesDto`, from `Plant/Features`);
-`culture` is optional. Omitting `features` → HTTP 500 even with a valid token
-(live-verified 2026-11-19; token-only requests succeed with `features` included).
+`items`, `features` (`RemotePlantFeaturesDto`, from `Plant/Features`) and
+`culture`. Omitting `features` or `culture` → HTTP 500 even with a valid token
+(live-verified 2026-11-19; token-only requests succeed with both included).
 There is no dedicated single-item endpoint and no `ReadDataPoints`-style route in
 the app — that path is the R2 web surface (`PlantMenuBsb`, BSB-only) which the
 integration uses for BSB address reads.
+
+**`culture` controls server-side localization** (live-verified 2026-11-19):
+`culture=en` returns `ZoneName` as `"Home"`, `culture=de` returns the German
+value (`"Zuhause"`) — including inside the echoed `features.zones[].name`.
+The field accepts a bare language code only: `de-DE` → HTTP 500. The APK sends
+`Locale.getDefault(Locale.Category.DISPLAY).getLanguage()` (language part only,
+`SystemCulture_androidKt.getSystemCultureName()`), so the integration sends the
+Home Assistant UI language instead of hardcoding `en`.
 
 **Live diff 2026-11-19 (Galevo gateway):** every item `PlantHome/GetData`
 returned was already present in the mobile `dataItems` response

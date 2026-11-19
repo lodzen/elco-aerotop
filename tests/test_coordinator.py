@@ -212,7 +212,7 @@ class FakeApi:
             raise response
         return response
 
-    async def async_get_system_items(self, _features, _zones):
+    async def async_get_system_items(self, _features, _zones, **_kwargs):
         return {}
 
     def _record_write(self, name: str, args: tuple, kwargs: dict) -> None:

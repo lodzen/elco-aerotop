@@ -88,6 +88,11 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         )
         self.api = api
         self._scan_interval = scan_interval
+        # Server-localized text (e.g. ZoneName) follows the UI language —
+        # the APK sends Locale.getDefault().getLanguage() (language part
+        # only; the API rejects region tags such as "de-DE").
+        language = getattr(getattr(hass, "config", None), "language", None)
+        self._culture = (language or "en").split("-")[0].split("_")[0] or "en"
         self._features: dict[str, Any] | None = None
         self._zone_numbers: list[int] | None = None
         self._command_lock = asyncio.Lock()
@@ -607,13 +612,16 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     data, system_items = await self.api.async_get_galevo_data(
                         self._features,
                         self._zone_numbers,
+                        culture=self._culture,
                     )
                     status["system_items"] = "available"
                 else:
                     data = await self.api.async_get_data(self._zone_numbers, use_cache=True)
                     system_items = await self._async_optional_probe(
                         "system_items",
-                        self.api.async_get_system_items(self._features, self._zone_numbers),
+                        self.api.async_get_system_items(
+                            self._features, self._zone_numbers, culture=self._culture
+                        ),
                         status,
                     )
 
