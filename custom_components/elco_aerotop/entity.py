@@ -30,15 +30,26 @@ def async_setup_platform_entities(
         create_entities(coordinator, async_add_entities)
         return
 
+    listener_removed = False
+
+    @callback
+    def _remove_listener() -> None:
+        # coordinator listeners pop() by id — a second call raises KeyError.
+        nonlocal listener_removed
+        if listener_removed:
+            return
+        listener_removed = True
+        remove_listener()
+
     @callback
     def _on_first_update() -> None:
         if coordinator.data is None:
             return
-        remove_listener()
+        _remove_listener()
         create_entities(coordinator, async_add_entities)
 
     remove_listener = coordinator.async_add_listener(_on_first_update)
-    entry.async_on_unload(remove_listener)
+    entry.async_on_unload(_remove_listener)
 
 
 class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
