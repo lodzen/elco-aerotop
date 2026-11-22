@@ -557,15 +557,15 @@ async def test_cooling_temperature_write_preserves_the_cooling_pair() -> None:
     coordinator = _coordinator(api)
     coordinator.async_request_refresh = AsyncMock()
 
-    with pytest.raises(HomeAssistantError, match="only supported on Galevo"):
-        await coordinator.async_set_zone_temperature(1, "comfort", 24, season="inactive")
+    with pytest.raises(HomeAssistantError, match="temperatures can only be changed"):
+        await coordinator.async_set_zone_temperature(1, "comfort", 24)
     assert api.write_calls == []
     await coordinator.async_set_zone_temperature(1, "cooling_comfort", 23.5)
 
     name, args, kwargs = api.write_calls[0]
     assert name == "zone_temperature"
     assert args[0].cooling_active is True
-    assert kwargs == {"comfort": 23.5, "reduced": 28, "cooling": True, "season": "active"}
+    assert kwargs == {"comfort": 23.5, "reduced": 28, "cooling": True}
     coordinator.async_request_refresh.assert_awaited_once()
 
 

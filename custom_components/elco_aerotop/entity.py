@@ -56,16 +56,10 @@ class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
 
     _attr_has_entity_name = True
 
-    def has_registry_entry(self, entity_domain: str, *, enabled_only: bool = False) -> bool:
+    def has_registry_entry(self, entity_domain: str) -> bool:
         """Return whether this entity already has a persistent Home Assistant ID."""
         registry = er.async_get(self.coordinator.hass)
-        entity_id = registry.async_get_entity_id(entity_domain, DOMAIN, self._attr_unique_id)
-        if entity_id is None:
-            return False
-        if not enabled_only:
-            return True
-        entry = registry.async_get(entity_id)
-        return entry is not None and not entry.disabled
+        return registry.async_get_entity_id(entity_domain, DOMAIN, self._attr_unique_id) is not None
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, key: str) -> None:
         super().__init__(coordinator)

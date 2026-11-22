@@ -832,7 +832,7 @@ async def test_cooling_write_is_rejected_when_controller_is_not_in_cooling_mode(
         },
     )
 
-    with pytest.raises(ValueError, match="only be changed while the zone is in heating mode"):
+    with pytest.raises(ValueError, match="only be changed when cooling is selected"):
         await client.async_set_zone_temperatures(
             zone,
             comfort=23.5,

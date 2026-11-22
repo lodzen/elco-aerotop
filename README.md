@@ -55,7 +55,7 @@ specific downloadable version.
 | Feature | BSB (`systemType: 5`) | Galevo (`systemType: 3`) |
 |---|---|---|
 | **Room heating and cooling** | A thermostat per supported zone. Cooling controls follow the controller's cooling-active flag. | A thermostat per supported zone. The selected plant mode determines whether the thermostat controls heating or cooling. |
-| **Prepare the next season** | Comfort and reduced targets can be adjusted during their active season. | Adjust heating or cooling comfort and reduced targets in either season without changing the plant mode. |
+| **Zone temperature targets** | Adjust comfort and reduced temperatures in the active season. | Adjust comfort and reduced temperatures in the active season. |
 | **Domestic hot water** | Native water heater with Off, On, and Eco where offered, plus comfort and reduced targets. | Native water heater with Disabled, Time Based, and Always active. Adjust scheduled comfort and economy, or the always-active target. |
 | **Whole-system mode** | — | Select from the plant's offered modes, such as Summer, Winter, Heating Only, Cooling, Cooling Only, and Off. |
 | **Holidays** | View holidays in a read-only zone calendar. Start, extend, or cancel the current holiday. Zone 1 offers Reduced or Frost protection. | Enter plant-wide start and end dates. Use the Holiday switch to submit or cancel the period. |
@@ -299,10 +299,9 @@ Galevo temperature changes require the current plant mode. Zone temperature chan
 both comfort and reduced values for the selected season. The thermostat's activity follows the
 controller's separate activity flags.
 
-On Galevo zones that support both seasons, use **Off-season heating comfort temperature** or
-**Off-season cooling comfort temperature** under Configuration to prepare the inactive season.
-The per-season reduced temperatures also support these adjustments. Editing an off-season
-setpoint leaves the plant mode and active target as they were.
+Season-specific zone setpoint writes require the matching active season. Some Galevo gateways
+mirror heating and cooling comfort targets, so editing an inactive target can change the live
+setpoint. Previously registered off-season controls appear as unavailable.
 
 ## Availability and refresh behavior
 

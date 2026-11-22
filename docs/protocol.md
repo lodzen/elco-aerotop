@@ -294,12 +294,13 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 Galevo supports the controls listed in the [entity guide](entities.md). Recorded hardware checks
 cover plant mode and scheduled hot-water comfort. The broader controls have Home Assistant
 regression coverage with mocked responses. Commands use a fresh read, gateway-provided limits
-where available, and serialized readback checks. Zone setpoint writes require `PlantMode` and
-both values for the requested season. The thermostat writes to the active season. Galevo's
-standalone temperature controls can edit the inactive season via the same heating or cooling
-endpoint without changing `PlantMode`. Hot-water writes honor `readOnly` and `ro` on changed
-setpoints. A combined hot-water request validates the destination setpoint before switching modes
-and again after confirming the mode. It reports a partial result when only the mode changes.
+where available, and serialized readback checks. Zone setpoint writes require fresh `PlantMode`
+and both values for the active season. A hardware test showed that writing a cooling comfort value
+in Winter can also change heating comfort and the effective target. The active-season requirement
+applies to the thermostat and standalone comfort and reduced controls. Hot-water writes honor
+`readOnly` and `ro` on changed setpoints. A combined hot-water request validates the destination
+setpoint before switching modes and again after confirming the mode. It reports a partial result
+when only the mode changes.
 BSB uses its existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):

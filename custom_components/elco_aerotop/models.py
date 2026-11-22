@@ -6,9 +6,7 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from math import isfinite
-from typing import Any, Literal
-
-type ZoneSetpointSeason = Literal["active", "inactive", "either"]
+from typing import Any
 
 
 def _first(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -683,21 +681,16 @@ class ZoneState:
             return self.cooling_comfort_temperature, self.cooling_reduced_temperature
         return self.comfort_temperature, self.reduced_temperature
 
-    def temperature_write_error(
-        self, *, cooling: bool, season: ZoneSetpointSeason = "active"
-    ) -> str | None:
-        """Check whether the controller can preserve both temperatures for this season."""
+    def temperature_write_error(self, *, cooling: bool) -> str | None:
+        """Require the active season and both current setpoints before writing."""
         active_cooling = self.uses_cooling_setpoints
         if active_cooling is None:
             return "Remocon did not report the current plant season"
-        if season == "active" and cooling != active_cooling:
+        if cooling != active_cooling:
             requested = "Cooling" if cooling else "Heating"
-            active = "cooling" if active_cooling else "heating"
             return (
-                f"{requested} temperatures can only be changed while the zone is in {active} mode"
+                f"{requested} temperatures can only be changed when {requested.lower()} is selected"
             )
-        if season == "inactive" and cooling == active_cooling:
-            return "The requested season is now active. Use the thermostat for its comfort target"
         comfort, reduced = self.temperature_variables(cooling=cooling)
         if comfort.value is None or reduced.value is None:
             return "Remocon did not return both zone temperatures"

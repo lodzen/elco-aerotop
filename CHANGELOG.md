@@ -4,6 +4,13 @@ All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
 ## 0.4.0 development history
 
+### Active-season write protection
+
+- Restrict Galevo zone comfort and reduced writes to the active season. Hardware testing showed a
+  cooling comfort write could change the active heating target while the plant stayed in Winter.
+- Keep registered off-season numbers unavailable and prevent existing season-specific controls from
+  sending an inactive-season write.
+
 ### Off-season controls and write validation
 
 - Register native controls from partial gateway data. Missing temperatures or mode options recover

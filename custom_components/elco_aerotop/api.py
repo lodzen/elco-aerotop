@@ -82,7 +82,6 @@ from .models import (
     ElcoData,
     NumericVariable,
     PlantState,
-    ZoneSetpointSeason,
     ZoneState,
     bsb_point_available,
     controller_system_type,
@@ -967,11 +966,8 @@ class ElcoApiClient:
         comfort: float,
         reduced: float,
         cooling: bool,
-        season: ZoneSetpointSeason,
     ) -> None:
         """Galevo zone temperatures: dedicated route for heating, item set for cooling."""
-        if error := zone.temperature_write_error(cooling=cooling, season=season):
-            raise ValueError(error)
         comfort_variable, reduced_variable = zone.temperature_variables(cooling=cooling)
         comfort_variable.validate_change(comfort)
         reduced_variable.validate_change(reduced)
@@ -1481,23 +1477,19 @@ class ElcoApiClient:
         comfort: float,
         reduced: float,
         cooling: bool = False,
-        season: ZoneSetpointSeason = "active",
     ) -> None:
-        """Write the requested season's heating or cooling setpoints."""
+        """Write heating or cooling setpoints for the active season only."""
+        if error := zone.temperature_write_error(cooling=cooling):
+            raise ValueError(error)
         if self.system_type == SYSTEM_TYPE_GALEVO:
             await self._async_set_galevo_zone_temperatures(
                 zone,
                 comfort=comfort,
                 reduced=reduced,
                 cooling=cooling,
-                season=season,
             )
             return
         self._require_supported_system()
-        if season != "active":
-            raise ValueError("Off-season zone setpoints are only supported on Galevo")
-        if error := zone.temperature_write_error(cooling=cooling):
-            raise ValueError(error)
         comfort_variable, reduced_variable = zone.temperature_variables(cooling=cooling)
         comfort_variable.validate(comfort)
         reduced_variable.validate(reduced)

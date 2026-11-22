@@ -8,6 +8,7 @@ from homeassistant.components.number import NumberDeviceClass, NumberEntity, Num
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 
 from .bsb_controls import BSB_NUMBER_CONTROL_SPECS, BsbNumberControlSpec, bsb_point_number
@@ -19,7 +20,7 @@ from .const import (
 )
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import ElcoData, NumericVariable, ZoneSetpointSeason, galevo_item_writable
+from .models import ElcoData, NumericVariable, galevo_item_writable
 
 
 class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
@@ -215,12 +216,12 @@ def _zone_temperature_number(
     *,
     cooling: bool,
     reduced: bool = False,
-    season: ZoneSetpointSeason,
+    retired_off_season: bool = False,
 ) -> ElcoTemperatureNumber:
     setting = "reduced" if reduced else "comfort"
     label = f"{'cooling ' if cooling else ''}{setting} temperature"
     kind = f"{'cooling_' if cooling else ''}{setting}"
-    if season == "inactive":
+    if retired_off_season:
         label = f"off-season {'cooling' if cooling else 'heating'} {setting} temperature"
         suffix = f"off_season_{'cooling' if cooling else 'heating'}_{setting}_temperature"
     else:
@@ -232,19 +233,25 @@ def _zone_temperature_number(
     def available(data: ElcoData) -> bool:
         zone = data.zones[zone_number]
         return (
-            not variable(data).read_only
-            and zone.temperature_write_error(cooling=cooling, season=season) is None
+            not retired_off_season
+            and not variable(data).read_only
+            and zone.temperature_write_error(cooling=cooling) is None
         )
+
+    async def write(value: float) -> None:
+        if retired_off_season:
+            raise HomeAssistantError("Off-season writes can change the active Galevo target")
+        await coordinator.async_set_zone_temperature(zone_number, kind, value)
 
     return ElcoTemperatureNumber(
         coordinator,
         f"zone_{zone_number}_{suffix}",
         f"Zone {zone_number} {label}",
         variable,
-        lambda value: coordinator.async_set_zone_temperature(
-            zone_number, kind, value, season=season
+        write,
+        available_fn=(
+            available if coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO else None
         ),
-        available_fn=available if season != "active" else None,
     )
 
 
@@ -306,34 +313,25 @@ def _create_entities(
                 else None,
             )
         )
-    zone_season: ZoneSetpointSeason = "either" if galevo else "active"
     for zone_number, zone in coordinator.data.zones.items():
         has_cooling = supports_cooling(coordinator.data.discovery.features, zone)
-        for cooling in (False, True) if has_cooling else (False,):
+        for cooling in (False, True):
+            if galevo:
+                retired = _zone_temperature_number(
+                    coordinator, zone_number, cooling=cooling, retired_off_season=True
+                )
+                if retired.has_registry_entry("number"):
+                    entities.append(retired)
+            if cooling and not has_cooling:
+                continue
             comfort, reduced = zone.temperature_variables(cooling=cooling)
-            legacy_comfort = _zone_temperature_number(
-                coordinator, zone_number, cooling=cooling, season=zone_season
-            )
+            legacy_comfort = _zone_temperature_number(coordinator, zone_number, cooling=cooling)
             if comfort.value is not None and legacy_comfort.has_registry_entry("number"):
                 entities.append(legacy_comfort)
-            if (
-                galevo
-                and has_cooling
-                and not legacy_comfort.has_registry_entry("number", enabled_only=True)
-            ):
-                off_season = _zone_temperature_number(
-                    coordinator, zone_number, cooling=cooling, season="inactive"
-                )
-                if off_season.has_registry_entry("number") or (
-                    comfort.value is not None
-                    and reduced.value is not None
-                    and not comfort.read_only
-                ):
-                    entities.append(off_season)
             if reduced.value is not None:
                 entities.append(
                     _zone_temperature_number(
-                        coordinator, zone_number, cooling=cooling, reduced=True, season=zone_season
+                        coordinator, zone_number, cooling=cooling, reduced=True
                     )
                 )
 

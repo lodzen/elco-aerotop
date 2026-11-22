@@ -50,7 +50,7 @@ Testing is especially useful for:
   controller or official application;
 - one conservative change to a BSB tuning control, followed by checking lines 648, 714, 720, or
   730 on the controller or Remocon;
-- cooling comfort and reduced targets on either family, including a Galevo off-season adjustment;
+- cooling comfort and reduced targets while cooling is active on either family;
 - every returned operating-mode choice, while avoiding changes that could make the installation
   unsafe or uncomfortable;
 - populated holiday periods, including active, future, deleted, and out-of-service entries;
@@ -71,9 +71,8 @@ numbers, addresses, or other personal data.
 | Zone thermostat and domestic hot water | Controls | Enabled | Primary user-facing controls |
 | BSB Holiday until and Cancel holiday | Controls | Enabled | Set or cancel the current zone holiday |
 | Galevo Holiday switch and draft dates | Controls and Configuration | Enabled | Manage a plant-wide holiday |
-| Zone/DHW and cooling reduced temperatures | Configuration | Enabled | Independent stored setpoints not represented by the native controls |
+| Zone/DHW and cooling reduced temperatures | Configuration | Enabled | Adjust reduced or economy targets alongside the native controls |
 | Existing comfort numbers and mode selects | Configuration | Existing registry setting | Preserve entity IDs and settings in use |
-| Galevo off-season comfort numbers | Configuration | Enabled | Set the inactive season's target |
 | Holiday operating-level select | Configuration | Enabled | Small, reversible controller setting associated with holiday calendars |
 | BSB 714/720/730 controls | Configuration | Disabled | Advanced controller tuning with fixed, reviewed limits |
 | Cooling, protection, holiday, and flow-offset values | Diagnostics | Disabled | Advanced read-only settings rather than live measurements |
@@ -138,6 +137,7 @@ labels.
 On Galevo, **Disabled**, **Time Based**, and **Always active** map to `off`, `heat_pump`,
 and `performance`. The native water heater uses these stable values. An existing mode select
 still displays the controller's labels. The water-heater target follows the selected operation.
+In Time Based mode, the controller follows its schedule. BSB uses `eco` for its separate Eco mode.
 The integration honors read-only flags on scheduled comfort, scheduled economy, and the
 always-active setpoint. The storage reading, operating mode, and target are available as sensors.
 
@@ -156,11 +156,10 @@ keep their entity IDs and enabled settings.
 |---|---|:---:|---|---|
 | DHW comfort temperature | `number.<device>_domestic_hot_water_comfort_temperature` | Existing registry setting | This number already exists and a comfort value is returned | Read/write |
 | DHW reduced temperature | `number.<device>_domestic_hot_water_reduced_temperature` | Enabled | A reduced value is returned | Read/write |
-| Zone `<zone>` off-season heating or cooling comfort temperature | `number.<device>_zone_<zone>_off_season_<season>_comfort_temperature` | Enabled | Galevo zone supports both seasons and reports that season's temperature pair. An enabled legacy comfort number can provide the same control | Read/write while that season is inactive |
-| Zone `<zone>` comfort temperature | `number.<device>_zone_<zone>_comfort_temperature` | Existing registry setting | This number already exists and a heating comfort value is returned | Read/write in either season on Galevo and during heating on BSB |
-| Zone `<zone>` reduced temperature | `number.<device>_zone_<zone>_reduced_temperature` | Enabled | A reduced value is returned | Read/write in either season on Galevo and during heating on BSB |
-| Zone `<zone>` cooling comfort temperature | `number.<device>_zone_<zone>_cooling_comfort_temperature` | Existing registry setting | This number already exists and a cooling comfort value is returned | Read/write in either season on Galevo and during cooling on BSB |
-| Zone `<zone>` cooling reduced temperature | `number.<device>_zone_<zone>_cooling_reduced_temperature` | Enabled | Cooling capability and a reduced value are returned | Read/write in either season on Galevo and during cooling on BSB |
+| Zone `<zone>` comfort temperature | `number.<device>_zone_<zone>_comfort_temperature` | Existing registry setting | This number already exists and a heating comfort value is returned | Write during heating |
+| Zone `<zone>` reduced temperature | `number.<device>_zone_<zone>_reduced_temperature` | Enabled | A reduced value is returned | Write during heating |
+| Zone `<zone>` cooling comfort temperature | `number.<device>_zone_<zone>_cooling_comfort_temperature` | Existing registry setting | This number already exists and a cooling comfort value is returned | Write during cooling |
+| Zone `<zone>` cooling reduced temperature | `number.<device>_zone_<zone>_cooling_reduced_temperature` | Enabled | Cooling capability and a reduced value are returned | Write during cooling |
 | DHW mode | `select.<device>_domestic_hot_water_mode` | Enabled when first added for an extra mode | The gateway offers a mode without a native mapping, or this select already exists | Read/write |
 | Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Enabled when first added for an extra mode | The gateway offers a mode without a native mapping, or this select already exists | Read/write |
 | Plant mode | `select.<device>_plant_mode` | Enabled | Galevo advertises a valid writable `PlantMode` item with options | Mobile `plantData/{gw}/mode` with fresh state and readback |
@@ -182,10 +181,9 @@ For the Galevo **Holiday** switch and **Pending holiday start/end** date entitie
 The thermostat follows the current heating or cooling season, and the water heater follows the DHW
 operation. Use the standalone reduced and economy numbers to edit those separate targets.
 Previously registered controls update from the same controller readback as the native entities.
-Galevo's heating and cooling reduced numbers and existing season-specific comfort numbers can
-adjust their named season at any time the gateway reports its setpoints and the current plant mode.
-The off-season comfort numbers are available one season at a time. If the selected season becomes
-active before the write, Home Assistant reports the change and directs you to the thermostat.
+Galevo's season-specific numbers are writable when their named season is active. Hardware testing
+showed that some Galevo gateways mirror comfort across seasons. Previously registered off-season
+comfort numbers keep their IDs and appear as unavailable.
 
 Temperature numbers declare Home Assistant's temperature device class and native degrees Celsius
 unit. Zone values use Remocon limits. The reviewed BSB limits are 4–35 °C in 0.5 °C steps for line

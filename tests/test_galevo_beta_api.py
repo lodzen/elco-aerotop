@@ -214,11 +214,10 @@ async def test_writable_boolean_data_item_keeps_the_gateway_wire_type():
     assert sent["prevValue"] is False
 
 
-@pytest.mark.parametrize(("plant_mode", "season"), [(3, "active"), (1, "inactive")])
-async def test_galevo_cooling_setpoint_writes_only_the_changed_item(plant_mode, season):
+async def test_galevo_cooling_setpoint_writes_only_the_changed_item():
     client, session = _client(FakeResponse(json_data={"success": True}))
     items = {
-        "PlantMode:0": {"value": plant_mode},
+        "PlantMode:0": {"value": 3},
         "ZoneComfortCoolingTemp:1": {
             "id": "ZoneComfortCoolingTemp",
             "zone": 1,
@@ -236,10 +235,8 @@ async def test_galevo_cooling_setpoint_writes_only_the_changed_item(plant_mode, 
     }
     client.last_system_items = items
     zone = ZoneState.from_galevo(1, {}, items)
-    assert zone.uses_cooling_setpoints is (plant_mode == 3) and zone.cooling_active is None
-    await client.async_set_zone_temperatures(
-        zone, comfort=23, reduced=27, cooling=True, season=season
-    )
+    assert zone.uses_cooling_setpoints and zone.cooling_active is None
+    await client.async_set_zone_temperatures(zone, comfort=23, reduced=27, cooling=True)
     _, url, options = session.calls[-1]
     assert url.endswith("/dataItems/SYNTHETIC_GW/set")
     assert len(options["json"]["items"]) == 1
@@ -250,21 +247,38 @@ async def test_galevo_cooling_setpoint_writes_only_the_changed_item(plant_mode, 
     }
 
 
-async def test_galevo_off_season_heating_preserves_the_companion_and_permissions():
+@pytest.mark.parametrize(("plant_mode", "cooling"), [(1, True), (3, False)])
+async def test_galevo_inactive_setpoint_never_reaches_transport(plant_mode, cooling):
+    client, session = _client()
+    items = {
+        "PlantMode:0": {"value": plant_mode},
+        "ZoneComfortTemp:1": {"value": 20},
+        "ZoneComfortCoolingTemp:1": {"value": 20},
+        "ZoneEconomyTemp:1": {"value": 17},
+        "ZoneEconomyCoolingTemp:1": {"value": 17},
+    }
+    client.last_system_items = items
+    zone = ZoneState.from_galevo(1, {}, items)
+    with pytest.raises(ValueError, match="temperatures can only be changed"):
+        await client.async_set_zone_temperatures(zone, comfort=16.5, reduced=17, cooling=cooling)
+    assert session.calls == []
+
+
+async def test_galevo_heating_preserves_the_companion_and_permissions():
     client, session = _client(FakeResponse(json_data={"success": True}))
     items = {
-        "PlantMode:0": {"value": 3},
+        "PlantMode:0": {"value": 1},
         "ZoneComfortTemp:1": {"value": 21, "ro": True},
         "ZoneEconomyTemp:1": {"value": 17},
     }
     raw = {"comf": {"value": 21}, "econ": {"value": 17}}
     zone = ZoneState.from_galevo(1, raw, items)
     with pytest.raises(ValueError, match="read-only"):
-        await client.async_set_zone_temperatures(zone, comfort=22, reduced=17, season="inactive")
+        await client.async_set_zone_temperatures(zone, comfort=22, reduced=17)
     assert session.calls == []
 
     # The writable reduced target can change while the old comfort value is preserved.
-    await client.async_set_zone_temperatures(zone, comfort=21, reduced=16, season="inactive")
+    await client.async_set_zone_temperatures(zone, comfort=21, reduced=16)
     _, url, options = session.calls[-1]
     assert url.endswith("/zones/SYNTHETIC_GW/1/temperatures")
     assert options["json"] == {"old": {"comf": 21, "econ": 17}, "new": {"comf": 21, "econ": 16}}

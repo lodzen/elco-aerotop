@@ -51,7 +51,6 @@ from .models import (
     NumericVariable,
     ReadOnlyDiscovery,
     SelectVariable,
-    ZoneSetpointSeason,
     controller_system_type,
     galevo_item_available,
     galevo_item_switch_value,
@@ -1025,15 +1024,11 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         zone_number: int,
         kind: str,
         value: float,
-        *,
-        season: ZoneSetpointSeason = "active",
     ) -> None:
         """Safely update one zone temperature while preserving its companion value."""
         galevo = self._system_type() == SYSTEM_TYPE_GALEVO
         if galevo and not GALEVO_WRITES_ENABLED:
             raise HomeAssistantError("Galevo zone temperature writes are disabled in this beta")
-        if not galevo and season != "active":
-            raise HomeAssistantError("Off-season zone setpoints are only supported on Galevo")
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()
@@ -1041,7 +1036,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     fresh = await self._async_fresh_data([zone_number])
                     zone = fresh.zones[zone_number]
                     cooling = kind.startswith("cooling_")
-                    if error := zone.temperature_write_error(cooling=cooling, season=season):
+                    if error := zone.temperature_write_error(cooling=cooling):
                         raise ValueError(error)
                     comfort_variable, reduced_variable = zone.temperature_variables(cooling=cooling)
                     comfort = comfort_variable.value
@@ -1061,7 +1056,6 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                             comfort=comfort,
                             reduced=reduced,
                             cooling=cooling,
-                            season=season,
                         ),
                         reconcile=lambda: self._async_fresh_data([zone_number]),
                         matches=lambda state: self._zone_temperatures_match(
