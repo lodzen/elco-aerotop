@@ -38,6 +38,7 @@ override-of-final-variable = "ignore"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 testpaths = ["tests"]
 # respx's pytest plugin imports httpx at load time; HA's httpx2 alias must
 # run first (pytest_homeassistant.bootstrap), so keep respx unloaded.
