@@ -557,12 +557,15 @@ async def test_cooling_temperature_write_preserves_the_cooling_pair() -> None:
     coordinator = _coordinator(api)
     coordinator.async_request_refresh = AsyncMock()
 
+    with pytest.raises(HomeAssistantError, match="only supported on Galevo"):
+        await coordinator.async_set_zone_temperature(1, "comfort", 24, season="inactive")
+    assert api.write_calls == []
     await coordinator.async_set_zone_temperature(1, "cooling_comfort", 23.5)
 
     name, args, kwargs = api.write_calls[0]
     assert name == "zone_temperature"
     assert args[0].cooling_active is True
-    assert kwargs == {"comfort": 23.5, "reduced": 28, "cooling": True}
+    assert kwargs == {"comfort": 23.5, "reduced": 28, "cooling": True, "season": "active"}
     coordinator.async_request_refresh.assert_awaited_once()
 
 
@@ -924,6 +927,9 @@ def test_platform_registers_late_entities_once_and_stops_on_unload() -> None:
     entity = ModuleType("homeassistant.helpers.entity")
     entity.Entity = object
     sys.modules.setdefault("homeassistant.helpers.device_registry", device_registry)
+    sys.modules.setdefault(
+        "homeassistant.helpers.entity_registry", ModuleType("homeassistant.helpers.entity_registry")
+    )
     sys.modules.setdefault("homeassistant.helpers.entity_platform", entity_platform)
     sys.modules.setdefault("homeassistant.helpers.entity", entity)
 

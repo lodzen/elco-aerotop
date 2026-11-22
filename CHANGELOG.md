@@ -2,7 +2,21 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
-## 0.4.0-beta.3
+## 0.4.0 development history
+
+### Off-season controls and write validation
+
+- Register native controls from partial gateway data. Missing temperatures or mode options recover
+  under the same entity IDs, including after reload. Keep standalone controls for additional
+  settings, extra controller modes, and existing entity IDs.
+- Require a reported Galevo plant season and both applicable zone setpoints before enabling or
+  writing a thermostat temperature. Honor read-only Galevo hot-water setpoints, including during
+  requests that change both mode and temperature.
+- Add Galevo off-season heating and cooling comfort controls. The per-season reduced temperatures
+  can also be adjusted without changing the plant mode.
+- Document BSB and Galevo side by side, including their entity, discovery, and holiday workflows.
+
+### Full Galevo controls
 
 - Enable the Galevo controls from PR #4, including the native thermostat and water heater,
   holiday dates and switch, quiet mode, hot-water boost, automatic thermoregulation, and
@@ -12,16 +26,15 @@ All notable changes to ELCO Aerotop for Home Assistant are documented here.
 - Validate and verify combined hot-water changes in stages, with an explicit error when
   a mode change succeeds but the requested temperature cannot be confirmed.
 
-## 0.4.0-beta.2
+### Scheduled hot-water comfort
 
 - Enable the Galevo scheduled hot-water comfort adjustment already verified on hardware.
   The number appears in Time Based mode, preserves the economy setpoint, and checks both
   settings with a fresh read after each command.
 
-## 0.4.0-beta.1
+### Initial Galevo support
 
-- Add Galevo monitoring and verified mobile plant-mode writes. Other Galevo controls remain
-  gated pending controller testing.
+- Add Galevo monitoring and verified mobile plant-mode writes.
 - Support a BSB gateway and a Galevo gateway side by side under a shared or separate Remocon
   account. Add one config entry per gateway.
 - Preserve BSB entity IDs, existing settings, and typed number controls. Flow sensors recover

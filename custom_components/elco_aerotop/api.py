@@ -82,6 +82,7 @@ from .models import (
     ElcoData,
     NumericVariable,
     PlantState,
+    ZoneSetpointSeason,
     ZoneState,
     bsb_point_available,
     controller_system_type,
@@ -966,14 +967,14 @@ class ElcoApiClient:
         comfort: float,
         reduced: float,
         cooling: bool,
+        season: ZoneSetpointSeason,
     ) -> None:
         """Galevo zone temperatures: dedicated route for heating, item set for cooling."""
-        if cooling != zone.uses_cooling_setpoints:
-            raise ValueError("The requested setpoints are outside the active season")
-        comfort_variable = zone.cooling_comfort_temperature if cooling else zone.comfort_temperature
-        reduced_variable = zone.cooling_reduced_temperature if cooling else zone.reduced_temperature
-        comfort_variable.validate(comfort)
-        reduced_variable.validate(reduced)
+        if error := zone.temperature_write_error(cooling=cooling, season=season):
+            raise ValueError(error)
+        comfort_variable, reduced_variable = zone.temperature_variables(cooling=cooling)
+        comfort_variable.validate_change(comfort)
+        reduced_variable.validate_change(reduced)
         if cooling:
             if comfort > reduced:
                 raise ValueError("Cooling comfort temperature cannot exceed reduced temperature")
@@ -995,8 +996,7 @@ class ElcoApiClient:
             return
         if comfort < reduced:
             raise ValueError("Heating comfort temperature cannot be below reduced temperature")
-        if comfort_variable.value is None or reduced_variable.value is None:
-            raise ValueError("Remocon did not return the current zone temperatures")
+        assert comfort_variable.value is not None and reduced_variable.value is not None
         await self.async_set_galevo_zone_temperatures(
             zone.number,
             comfort=comfort,
@@ -1481,26 +1481,24 @@ class ElcoApiClient:
         comfort: float,
         reduced: float,
         cooling: bool = False,
+        season: ZoneSetpointSeason = "active",
     ) -> None:
-        """Write active heating or cooling temperatures as one atomic command."""
+        """Write the requested season's heating or cooling setpoints."""
         if self.system_type == SYSTEM_TYPE_GALEVO:
             await self._async_set_galevo_zone_temperatures(
                 zone,
                 comfort=comfort,
                 reduced=reduced,
                 cooling=cooling,
+                season=season,
             )
             return
         self._require_supported_system()
-        active_cooling = zone.cooling_active is True
-        if cooling != active_cooling:
-            requested = "Cooling" if cooling else "Heating"
-            active = "cooling" if active_cooling else "heating"
-            raise ValueError(
-                f"{requested} temperatures can only be changed while the zone is in {active} mode"
-            )
-        comfort_variable = zone.cooling_comfort_temperature if cooling else zone.comfort_temperature
-        reduced_variable = zone.cooling_reduced_temperature if cooling else zone.reduced_temperature
+        if season != "active":
+            raise ValueError("Off-season zone setpoints are only supported on Galevo")
+        if error := zone.temperature_write_error(cooling=cooling):
+            raise ValueError(error)
+        comfort_variable, reduced_variable = zone.temperature_variables(cooling=cooling)
         comfort_variable.validate(comfort)
         reduced_variable.validate(reduced)
         if cooling and comfort > reduced:

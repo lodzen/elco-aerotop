@@ -1,6 +1,6 @@
 # Complete entity, sensor, and control catalogue
 
-[Back to the main README](../README.md)
+[Back to the main README](../README.md) · [Compare BSB and Galevo support](../README.md#what-you-can-do)
 
 This page documents every Home Assistant entity family exposed by ELCO Aerotop: where it appears
 on the device page, whether it is enabled by default, when it is created, and whether it can write
@@ -10,17 +10,17 @@ Entity creation is capability-driven. Two installations can legitimately have di
 counts because controllers, connected probes, firmware, and advertised Remocon features vary. The
 integration uses structured Remocon JSON APIs for runtime data; it does not scrape web pages.
 
-## Galevo beta
+## Controller families
 
-Galevo can expose a native zone thermostat and water heater, plant and zone mode selects,
-temperature and flow numbers, quiet mode, hot-water boost, automatic thermoregulation,
-and a holiday switch with two pending dates. The gateway determines the available entities.
-Existing BSB entity names, IDs, registry settings, and typed numeric input boxes are preserved.
+Both BSB and Galevo support native zone thermostats, a native water heater, and readings such as
+temperatures, pressure, flow, heat demand, and controller errors. Each gateway gets its own
+Home Assistant device, with entities selected from its reported capabilities.
 
-Galevo monitoring includes the plant-mode status, DHW operation and target, the measured
-storage temperature when a probe supplies it, and available holiday, quiet mode, boost,
-and thermoregulation flags. The DHW operation sensor uses stable values such as `off`,
-`heat_pump`, and `performance`. A setting can appear on a later successful poll.
+- **BSB** adds the zone holiday calendar and current-holiday controls, heating-circuit tuning,
+  controller maintenance information, and optional annual energy records.
+- **Galevo** adds plant mode, season-specific temperature and flow controls, quiet mode, hot-water
+  boost, automatic thermoregulation, plant-wide holiday dates and switch, and consumption reports.
+  Dedicated sensors show plant mode, hot-water operation, and the stored hot-water target.
 
 ## Reading the tables
 
@@ -39,26 +39,26 @@ temporarily unavailable entity remains registered and can recover on a later pol
 
 ## Testing status and how to help
 
-The integration has automated parser, mapping, diagnostics, and API-request tests. However, its
-**write functionality, holiday calendars, and read-only schedule discovery are not yet sufficiently
-tested on real ELCO installations**. Controller models and firmware can expose different options
-and response shapes, so field testing is important before these features can be considered mature.
+Automated tests cover both controller families, including their Home Assistant entities and API
+requests. The recorded Galevo hardware checks include plant-mode changes and scheduled hot-water
+comfort. Reports from more models and firmware versions help verify which other options each
+gateway exposes.
 
 Testing is especially useful for:
 
 - a conservative thermostat or DHW setpoint change that can be checked immediately on the ELCO
   controller or official application;
-- one conservative change to each new BSB control, followed by checking lines 648, 714, 720, or
+- one conservative change to a BSB tuning control, followed by checking lines 648, 714, 720, or
   730 on the controller or Remocon;
-- cooling comfort/reduced changes during a period when Remocon reports cooling as active;
+- cooling comfort and reduced targets on either family, including a Galevo off-season adjustment;
 - every returned operating-mode choice, while avoiding changes that could make the installation
   unsafe or uncomfortable;
 - populated holiday periods, including active, future, deleted, and out-of-service entries;
 - heating, cooling, and DHW weekly schedules with different day/time layouts.
 
-Holiday calendars and schedule discovery are read-only. The separate holiday date and cancel
-button reproduce Remocon's current-holiday workflow; the controller's eight-slot planner is not
-exposed. Schedule editing is not implemented. To report results, open a
+Weekly programs are read-only on both families. BSB exposes a read-only calendar and writes the
+current zone holiday through dedicated controls. Galevo uses a plant-wide holiday switch and date
+drafts. To report results, open a
 [GitHub issue](https://github.com/thomasgregg/elco-aerotop/issues) with the controller model,
 firmware, steps, expected/observed values, and a carefully inspected redacted Home Assistant
 diagnostic export. Never share Remocon credentials, cookies, tokens, gateway identifiers, serial
@@ -69,9 +69,11 @@ numbers, addresses, or other personal data.
 | Entity group | Section | Default | Why |
 |---|---|:---:|---|
 | Zone thermostat and domestic hot water | Controls | Enabled | Primary user-facing controls |
-| Current holiday date and cancel button | Controls | Enabled | Native Remocon holiday workflow |
+| BSB Holiday until and Cancel holiday | Controls | Enabled | Set or cancel the current zone holiday |
+| Galevo Holiday switch and draft dates | Controls and Configuration | Enabled | Manage a plant-wide holiday |
 | Zone/DHW and cooling reduced temperatures | Configuration | Enabled | Independent stored setpoints not represented by the native controls |
-| Duplicate comfort numbers and mode selects | Configuration | Disabled | Compatibility and advanced access without duplicating primary controls |
+| Existing comfort numbers and mode selects | Configuration | Existing registry setting | Preserve entity IDs and settings in use |
+| Galevo off-season comfort numbers | Configuration | Enabled | Set the inactive season's target |
 | Holiday operating-level select | Configuration | Enabled | Small, reversible controller setting associated with holiday calendars |
 | BSB 714/720/730 controls | Configuration | Disabled | Advanced controller tuning with fixed, reviewed limits |
 | Cooling, protection, holiday, and flow-offset values | Diagnostics | Disabled | Advanced read-only settings rather than live measurements |
@@ -79,7 +81,8 @@ numbers, addresses, or other personal data.
 | Metadata, faults, maintenance, and health | Diagnostics | Enabled | Important device and problem information kept out of normal sensors |
 | Duplicate activity states and internal gas/source/hot-gas values | Diagnostics | Disabled | Native-control overlap or specialist troubleshooting |
 | Low-level BSB 700–730 and cooling 8786/8787 values | Diagnostics | Disabled | Controller-level troubleshooting |
-| All 80 energy-history entities | Diagnostics | Disabled | Fixed historical records, not increasing Energy Dashboard counters |
+| BSB annual energy records | Diagnostics | Disabled | Fixed historical records |
+| Galevo energy consumption reports | Sensors | Enabled | Consumption over a stated time window |
 
 Entity category and entity domain answer different questions. The writable holiday operating
 level is a Configuration select; its older sensor counterpart remains a read-only Diagnostic for
@@ -90,8 +93,12 @@ Diagnostics.
 
 | Entity | Typical entity ID | Default | Created when | Access |
 |---|---|:---:|---|---|
-| Zone `<zone>` thermostat | `climate.<device>_zone_<zone>_thermostat` | Enabled | The zone has a comfort setpoint and a safely mapped mode | Read/write |
-| Domestic hot water | `water_heater.<device>_domestic_hot_water` | Enabled | DHW has a comfort setpoint and a safely mapped mode | Read/write |
+| Zone `<zone>` thermostat | `climate.<device>_zone_<zone>_thermostat` | Enabled | The zone reports a comfort setpoint or a mapped mode | Read/write |
+| Domestic hot water | `water_heater.<device>_domestic_hot_water` | Enabled | DHW reports a comfort setpoint or a mapped mode | Read/write |
+
+The native entities keep their IDs when readings or mode options temporarily disappear. Actions
+return as their data becomes available again. A partial response does not create extra comfort
+numbers or mode selects.
 
 ### Zone thermostat mapping
 
@@ -106,7 +113,9 @@ BSB Protection can still request heat. Galevo's separate Off option maps to `off
 cooling-active flag to select cooling targets. On Galevo, **Cooling** or **Cooling Only** selects
 cooling targets. The plant-mode select changes the Galevo plant season.
 
-The thermostat target is the stored comfort setpoint for the season selected above.
+The thermostat target is the stored comfort setpoint for the selected season. When the Galevo
+plant mode is missing, the thermostat hides the seasonal target and temperature adjustment.
+Both comfort and reduced values must be present before a zone temperature can be changed.
 The effective request may differ during Automatic, Reduced,
 Protection, or holiday operation; the desired-temperature sensor reports that effective request.
 Current temperature comes only from the zone's real room probe. Outdoor, flow, and desired
@@ -127,9 +136,10 @@ On and Off are supported. Mapping uses stable numeric codes returned by Remocon,
 labels.
 
 On Galevo, **Disabled**, **Time Based**, and **Always active** map to `off`, `heat_pump`,
-and `performance`. The native water heater uses these stable values, and the mode select
-displays the controller's labels. The water-heater target follows the selected operation.
-The storage reading and operation and target sensors are also available separately.
+and `performance`. The native water heater uses these stable values. An existing mode select
+still displays the controller's labels. The water-heater target follows the selected operation.
+The integration honors read-only flags on scheduled comfort, scheduled economy, and the
+always-active setpoint. The storage reading, operating mode, and target are available as sensors.
 
 All native writes first refresh only the required current state, validate controller-provided
 limits/options, serialize commands per device, and preserve companion values required by Remocon.
@@ -138,22 +148,23 @@ reconciles the result when Remocon permits another request.
 
 ## Advanced and compatibility controls
 
-The native thermostat and water-heater entities combine the values most people need. Lower-level
-number and select entities remain for existing dashboards, precise configuration, and unusual
-controller variants. This is the intentional overlap between Controls and Configuration.
+Use the thermostat and water heater for comfort temperatures and operating modes. Standalone
+controls expose separate settings and additional controller modes. Previously registered controls
+keep their entity IDs and enabled settings.
 
 | Entity | Typical entity ID | Default | Created when | Access |
 |---|---|:---:|---|---|
-| DHW comfort temperature | `number.<device>_domestic_hot_water_comfort_temperature` | Disabled | A comfort value is returned | Read/write |
+| DHW comfort temperature | `number.<device>_domestic_hot_water_comfort_temperature` | Existing registry setting | This number already exists and a comfort value is returned | Read/write |
 | DHW reduced temperature | `number.<device>_domestic_hot_water_reduced_temperature` | Enabled | A reduced value is returned | Read/write |
-| Zone `<zone>` comfort temperature | `number.<device>_zone_<zone>_comfort_temperature` | Disabled | A comfort value is returned | Read/write |
-| Zone `<zone>` reduced temperature | `number.<device>_zone_<zone>_reduced_temperature` | Enabled | A reduced value is returned | Read/write |
-| Zone `<zone>` cooling comfort temperature | `number.<device>_zone_<zone>_cooling_comfort_temperature` | Disabled | Cooling capability and a comfort value are returned | Read/write while cooling is active |
-| Zone `<zone>` cooling reduced temperature | `number.<device>_zone_<zone>_cooling_reduced_temperature` | Enabled | Cooling capability and a reduced value are returned | Read/write while cooling is active |
-| DHW mode | `select.<device>_domestic_hot_water_mode` | Disabled | Allowed DHW choices are returned | Read/write |
-| Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Disabled | Allowed zone choices are returned | Read/write |
+| Zone `<zone>` off-season heating or cooling comfort temperature | `number.<device>_zone_<zone>_off_season_<season>_comfort_temperature` | Enabled | Galevo zone supports both seasons and reports that season's temperature pair. An enabled legacy comfort number can provide the same control | Read/write while that season is inactive |
+| Zone `<zone>` comfort temperature | `number.<device>_zone_<zone>_comfort_temperature` | Existing registry setting | This number already exists and a heating comfort value is returned | Read/write in either season on Galevo and during heating on BSB |
+| Zone `<zone>` reduced temperature | `number.<device>_zone_<zone>_reduced_temperature` | Enabled | A reduced value is returned | Read/write in either season on Galevo and during heating on BSB |
+| Zone `<zone>` cooling comfort temperature | `number.<device>_zone_<zone>_cooling_comfort_temperature` | Existing registry setting | This number already exists and a cooling comfort value is returned | Read/write in either season on Galevo and during cooling on BSB |
+| Zone `<zone>` cooling reduced temperature | `number.<device>_zone_<zone>_cooling_reduced_temperature` | Enabled | Cooling capability and a reduced value are returned | Read/write in either season on Galevo and during cooling on BSB |
+| DHW mode | `select.<device>_domestic_hot_water_mode` | Enabled when first added for an extra mode | The gateway offers a mode without a native mapping, or this select already exists | Read/write |
+| Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Enabled when first added for an extra mode | The gateway offers a mode without a native mapping, or this select already exists | Read/write |
 | Plant mode | `select.<device>_plant_mode` | Enabled | Galevo advertises a valid writable `PlantMode` item with options | Mobile `plantData/{gw}/mode` with fresh state and readback |
-| Scheduled hot water comfort temperature | `number.<device>_scheduled_hot_water_comfort_temperature` | Enabled | Galevo is in Time Based mode and returns a writable comfort value with bounds and an economy value | Typed input, verified by reading back both scheduled setpoints |
+| Scheduled hot water comfort temperature | `number.<device>_scheduled_hot_water_comfort_temperature` | Existing registry setting | This number already exists. Available in Time Based mode with a writable, bounded comfort value and an economy value | Typed input, verified by reading back both scheduled setpoints |
 | Zone heating and cooling flow temperatures | `number.<device>_zone_<zone>_<season>_flow_temperature` | Enabled | Galevo returns the available flow item and permits writing | Typed input |
 | Zone heating and cooling flow offsets | `number.<device>_zone_<zone>_<season>_flow_offset` | Enabled | Galevo returns the available offset and permits writing | Slider |
 | Quiet mode, hot-water boost, automatic thermoregulation | `switch.<device>_quiet_mode`, `switch.<device>_domestic_hot_water_boost`, `switch.<device>_automatic_thermoregulation` | Enabled | Galevo returns the corresponding writable item | Read/write |
@@ -168,10 +179,13 @@ from its option text, and the write validates and sends the associated numeric v
 For the Galevo **Holiday** switch and **Pending holiday start/end** date entities, see
 [Holiday periods in Home Assistant](holidays.md#galevo-holiday-controls).
 
-Comfort numbers and mode selects duplicate the native controls, so new registrations keep them
-disabled. Reduced values remain enabled because neither native model has a separate reduced target.
-Both representations share one coordinator write path; changing one updates the other after the
-post-command refresh without sending a second command.
+The thermostat follows the current heating or cooling season, and the water heater follows the DHW
+operation. Use the standalone reduced and economy numbers to edit those separate targets.
+Previously registered controls update from the same controller readback as the native entities.
+Galevo's heating and cooling reduced numbers and existing season-specific comfort numbers can
+adjust their named season at any time the gateway reports its setpoints and the current plant mode.
+The off-season comfort numbers are available one season at a time. If the selected season becomes
+active before the write, Home Assistant reports the change and directs you to the thermostat.
 
 Temperature numbers declare Home Assistant's temperature device class and native degrees Celsius
 unit. Zone values use Remocon limits. The reviewed BSB limits are 4–35 °C in 0.5 °C steps for line
@@ -192,6 +206,9 @@ These appear under Sensors and are enabled by default.
 |---|---|---:|---|
 | Outside temperature | `sensor.<device>_outside_temperature` | °C | Reading or outdoor-probe capability exists |
 | Domestic hot water temperature | `sensor.<device>_domestic_hot_water_temperature` | °C | Reading or DHW-probe capability exists |
+| Domestic hot water operation | `sensor.<device>_domestic_hot_water_operation` | — | Galevo reports the current hot-water mode |
+| Domestic hot water target temperature | `sensor.<device>_domestic_hot_water_target_temperature` | °C | Galevo reports the target for the current mode |
+| Plant mode status | `sensor.<device>_plant_mode_status` | — | Galevo returns `PlantMode` |
 | Heating circuit pressure | `sensor.<device>_heating_circuit_pressure` | bar | System data or BSB pressure fallback is supported |
 | Heating circuit flow temperature | `sensor.<device>_heating_circuit_flow_temperature` | °C | System data is supported |
 | Heating circuit flow setpoint temperature | `sensor.<device>_heating_circuit_flow_setpoint_temperature` | °C | System data is supported |
@@ -214,6 +231,7 @@ out-of-service flag makes only the affected entity unavailable.
 | Heat pump running | `binary_sensor.<device>_heat_pump_running` | Enabled | Heat-pump capability or running value exists |
 | Flame on | `binary_sensor.<device>_flame_on` | Enabled | Boiler capability or flame state exists |
 | Zone `<zone>` heat request | `binary_sensor.<device>_zone_<zone>_heat_request` | Enabled | A zone request flag is returned |
+| Domestic hot water boost | `binary_sensor.<device>_domestic_hot_water_boost` | Enabled | Remocon returns `IsDhwBoost` |
 
 On cooling-capable systems, heat request may represent a combined heating-or-cooling request. The
 thermostat activity is preferable when separate heating/cooling flags are returned.
@@ -238,10 +256,20 @@ under Diagnostics because sensor entities cannot use the writable Configuration 
 Flow offsets use Home Assistant's temperature-difference device class; all other values in this
 table that represent temperatures use the absolute-temperature device class.
 
-## Holiday calendars
+## Holiday entities
 
-See [Holiday periods in Home Assistant](holidays.md) for the user-facing workflow, the reason the
-calendar is read-only, controller side effects, operating levels, and a native dashboard example.
+See [Holiday periods in Home Assistant](holidays.md) for step-by-step instructions for both
+families and a BSB dashboard example.
+
+### Galevo plant-wide holiday
+
+| Entity | Typical entity ID | Purpose |
+|---|---|---|
+| Pending holiday start | `date.<device>_pending_holiday_start` | Edit the first day of the local draft |
+| Pending holiday end | `date.<device>_pending_holiday_end` | Edit the inclusive final day of the local draft |
+| Holiday | `switch.<device>_holiday` | Submit the draft or cancel the holiday. State follows the controller's holiday flag. |
+
+### BSB zone calendar and current holiday
 
 | Entity | Typical entity ID | Default | Created when | Access |
 |---|---|:---:|---|---|
@@ -283,6 +311,13 @@ current-holiday writes, and schedule discovery still need reports from populated
 | Appliance serial | `sensor.<device>_appliance_serial` | Metadata | Plant-header or BSB appliance API returns it |
 | Plant owner | `sensor.<device>_plant_owner` | Metadata | Plant-user API returns a first or last name |
 | Account language | `sensor.<device>_account_language` | Metadata | Plant-user API returns it |
+| Bus devices | `sensor.<device>_bus_devices` | Inventory | Galevo returns a bus-device list |
+| Gateway signal level | `sensor.<device>_gateway_signal_level` | Connectivity | Galevo returns mobile menu item 119 |
+| Weather | `sensor.<device>_weather` | Status | Remocon returns `Weather` |
+| Quiet mode | `binary_sensor.<device>_quiet_mode` | Status | Remocon returns `IsQuite` |
+| Automatic thermoregulation | `binary_sensor.<device>_automatic_thermoregulation` | Status | Remocon returns `AutomaticThermoregulation` |
+| Holiday active | `binary_sensor.<device>_holiday_active` | Status | Remocon returns `Holiday` |
+| Backup resistor active | `binary_sensor.<device>_backup_resistor_active` | Status | Remocon returns `IsResistorOn` |
 | Controller error count | `sensor.<device>_controller_error_count` | Fault | Error API returns a list |
 | Controller error | `binary_sensor.<device>_controller_error` | Problem | Error API returns a list; up to ten records are attributes |
 | Maintenance code 1/2 | `sensor.<device>_maintenance_code_<1-2>` | Maintenance | BSB 7000 response is usable |
@@ -310,6 +345,14 @@ not a second entity. Owner names, phone numbers, and plant addresses are redacte
 diagnostics even when their dedicated entities are present locally.
 
 ## Diagnostics disabled by default
+
+Remocon can also provide these optional readings.
+
+| Entity | Typical entity ID | Created when |
+|---|---|---|
+| On-line outdoor temperature | `sensor.<device>_on_line_outdoor_temperature` | Galevo returns mobile menu item 130 |
+| Buffer control mode | `sensor.<device>_buffer_control_mode` | Remocon returns `BufferControlMode` |
+| Buffer comfort and economy temperatures | `sensor.<device>_buffer_<level>_<season>_temperature` | Remocon returns the heating or cooling buffer setpoint |
 
 | Entity | Typical entity ID | Created when |
 |---|---|---|
@@ -354,18 +397,18 @@ suppress unrelated data.
 
 ## Energy-history entities
 
-The controller exposes ten fixed history slots with eight fields each: 80 diagnostic entities. All
-are registered **disabled by default**, including slot 1. Every display name starts with
-`Annual energy record <slot> –` so Home Assistant sorts the eight children of each record together.
-This applies consistently to all ten records, not only to the first or latest record.
-
 ### Galevo consumption reports
 
 Galevo publishes separate `sensor.<device>_energy_<usage>_<period>` readings for heating,
 hot water, and cooling when the service returns that series. The periods are the last
 24 hours, last 7 days, last complete month, and last 12 complete months. Missing buckets
-leave the affected period unavailable. These are rolling measurements in kWh. They have
-their own IDs and are separate from the fixed BSB annual records below.
+leave the affected period unavailable. These are rolling measurements in kWh.
+
+### BSB annual records
+
+BSB exposes ten fixed history slots with eight fields each. These 80 diagnostic entities are
+**disabled by default**. Every display name starts with `Annual energy record <slot> –` so
+Home Assistant groups the eight fields of each record together.
 
 | Per-slot entity | Typical entity ID | Unit | Meaning |
 |---|---|---:|---|
@@ -465,5 +508,6 @@ Configuration, and Diagnostics without changing their IDs or enabled state.
 
 Home Assistant records state changes for enabled entities. Enabling a large group can make the
 device Activity view much busier, especially when raw and native entities reflect the same state.
-The disabled-by-default policy reduces this noise on new installations. Disabling a duplicate does
-not disable the underlying controller feature or its native thermostat/water-heater control.
+Fresh setups omit redundant write entities. Optional read-only diagnostic entities can be enabled
+for controller-specific states. Existing standalone controls can be disabled individually while the
+native controls continue to work.

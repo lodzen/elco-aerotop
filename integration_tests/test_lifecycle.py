@@ -56,7 +56,7 @@ def fake_gateway(monkeypatch, *, gate=None, fail_first=False):
     return api, first_attempt
 
 
-def existing_entry(hass):
+def make_entry(hass):
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Existing BSB",
@@ -69,6 +69,11 @@ def existing_entry(hass):
         unique_id=GATEWAY_ID,
     )
     entry.add_to_hass(hass)
+    return entry
+
+
+def existing_entry(hass):
+    entry = make_entry(hass)
     registry = er.async_get(hass)
     climate = registry.async_get_or_create(
         "climate",
@@ -91,12 +96,21 @@ def existing_entry(hass):
 async def test_existing_bsb_entry_on_real_ha(hass, monkeypatch):
     api, _ = fake_gateway(monkeypatch)
     entry, thermostat, disabled = existing_entry(hass)
+    registry = er.async_get(hass)
+    mode_select = registry.async_get_or_create(
+        "select",
+        DOMAIN,
+        f"{GATEWAY_ID}_dhw_mode",
+        suggested_object_id="existing_dhw_mode",
+        config_entry=entry,
+    )
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.state is ConfigEntryState.LOADED
     assert hass.states.get(thermostat).state in {"auto", "heat", "cool"}
-    assert er.async_get(hass).async_get(disabled).disabled_by is er.RegistryEntryDisabler.USER
+    assert registry.async_get(disabled).disabled_by is er.RegistryEntryDisabler.USER
     assert hass.states.get(disabled) is None
+    assert hass.states.get(mode_select.entity_id).state == "On"
     assert er.async_get(hass).async_get_entity_id(
         "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
     )
@@ -110,7 +124,6 @@ async def test_existing_bsb_entry_on_real_ha(hass, monkeypatch):
     api.async_set_zone_temperatures.assert_awaited_once()
     assert api.async_set_zone_temperatures.await_args.kwargs["comfort"] == 22
     api.async_get_galevo_data.assert_not_awaited()
-    registry = er.async_get(hass)
     reduced = registry.async_get_entity_id(
         "number", DOMAIN, f"{GATEWAY_ID}_zone_1_reduced_temperature"
     )
@@ -119,6 +132,36 @@ async def test_existing_bsb_entry_on_real_ha(hass, monkeypatch):
         registry.async_get_entity_id("sensor", DOMAIN, f"{GATEWAY_ID}_gateway_signal_level") is None
     )
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_bsb_selects_expose_additional_controller_modes(hass, monkeypatch):
+    api, _ = fake_gateway(monkeypatch)
+    entry = make_entry(hass)
+    raw = FIXTURE["get_data"]
+    plant = PlantState.parse(
+        {**raw["plantData"], "dhwMode": {"value": 1, "allowedOptions": [1, 9]}}
+    )
+    zone = ZoneState.parse(1, {**raw["zoneData"], "mode": {"value": 1, "allowedOptions": [1, 9]}})
+    api.async_get_data.side_effect = None
+    api.async_get_data.return_value = ElcoData(GATEWAY_ID, plant, {1: zone})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    registry = er.async_get(hass)
+    climate = registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    assert hass.states.get(climate).attributes["hvac_modes"] == ["auto"]
+    assert hass.states.get(heater).attributes["operation_list"] == ["heat_pump"]
+    for key in ("zone_1_mode", "dhw_mode"):
+        select = registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_{key}")
+        assert "9" in hass.states.get(select).attributes["options"]
+        await hass.services.async_call(
+            "select", "select_option", {"entity_id": select, "option": "9"}, blocking=True
+        )
+    assert api.async_set_zone_mode.await_args.kwargs["mode"] == 9
+    assert api.async_set_dhw.await_args.kwargs["mode"] == 9
 
 
 async def test_existing_bsb_flow_setpoint_when_first_poll_omits_item(hass, monkeypatch):

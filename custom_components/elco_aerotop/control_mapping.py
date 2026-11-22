@@ -36,18 +36,18 @@ def _supported_values(variable: SelectVariable) -> set[int]:
     return {option.value for option in variable.options}
 
 
-def zone_hvac_mode(variable: SelectVariable, *, cooling: bool = False) -> str | None:
+def zone_hvac_mode(variable: SelectVariable, *, cooling: bool | None = False) -> str | None:
     """Translate the current ELCO zone mode to a Home Assistant HVAC mode."""
     if variable.value == ZONE_MODE_AUTOMATIC:
         return "auto"
     if variable.value == GALEVO_ZONE_OFF:
         return "off"
-    if variable.value in {ZONE_MODE_PROTECTION, ZONE_MODE_REDUCED, ZONE_MODE_COMFORT}:
+    if cooling is not None and variable.value in _ZONE_PRESETS:
         return "cool" if cooling else "heat"
     return None
 
 
-def zone_hvac_modes(variable: SelectVariable, *, cooling: bool = False) -> tuple[str, ...]:
+def zone_hvac_modes(variable: SelectVariable, *, cooling: bool | None = False) -> tuple[str, ...]:
     """Return only HVAC modes backed by options offered by the gateway."""
     supported = _supported_values(variable)
     modes: list[str] = []
@@ -55,7 +55,7 @@ def zone_hvac_modes(variable: SelectVariable, *, cooling: bool = False) -> tuple
         modes.append("off")
     if ZONE_MODE_AUTOMATIC in supported:
         modes.append("auto")
-    if supported.intersection({ZONE_MODE_PROTECTION, ZONE_MODE_REDUCED, ZONE_MODE_COMFORT}):
+    if cooling is not None and supported.intersection(_ZONE_PRESETS):
         modes.append("cool" if cooling else "heat")
     return tuple(modes)
 
@@ -71,11 +71,16 @@ def zone_presets(variable: SelectVariable) -> tuple[str, ...]:
     return tuple(preset for value, preset in _ZONE_PRESETS.items() if value in supported)
 
 
+def zone_modes_are_mapped(variable: SelectVariable) -> bool:
+    """Return whether the native HVAC modes and presets cover every offered mode."""
+    return _supported_values(variable) <= {ZONE_MODE_AUTOMATIC, GALEVO_ZONE_OFF, *_ZONE_PRESETS}
+
+
 def zone_mode_for_hvac(
     variable: SelectVariable,
     hvac_mode: str,
     *,
-    cooling: bool = False,
+    cooling: bool | None = False,
 ) -> int:
     """Return the verified controller mode for a Home Assistant HVAC mode."""
     supported = _supported_values(variable)
@@ -84,7 +89,7 @@ def zone_mode_for_hvac(
     if hvac_mode == "off" and GALEVO_ZONE_OFF in supported:
         return GALEVO_ZONE_OFF
     direct_mode = "cool" if cooling else "heat"
-    if hvac_mode == direct_mode:
+    if cooling is not None and hvac_mode == direct_mode:
         for value in (ZONE_MODE_COMFORT, ZONE_MODE_REDUCED, ZONE_MODE_PROTECTION):
             if value in supported:
                 return value
@@ -109,6 +114,11 @@ def dhw_operations(variable: SelectVariable) -> tuple[str, ...]:
     """Return only DHW operations backed by options offered by the gateway."""
     supported = _supported_values(variable)
     return tuple(operation for value, operation in _DHW_OPERATIONS.items() if value in supported)
+
+
+def dhw_modes_are_mapped(variable: SelectVariable) -> bool:
+    """Return whether native water-heater operations cover every offered mode."""
+    return _supported_values(variable) <= _DHW_OPERATIONS.keys()
 
 
 def dhw_mode_for_operation(variable: SelectVariable, operation: str) -> int:

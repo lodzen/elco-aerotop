@@ -33,42 +33,43 @@
 
 ## Overview
 
-ELCO Aerotop brings a Remocon-connected heat pump into Home Assistant as one native device. It is
-intended for everyday monitoring, heating and hot-water control, automations, and troubleshooting
-without having to open the Remocon website.
+ELCO Aerotop brings Remocon-connected heat pumps with **BSB** or **Galevo** controllers into Home
+Assistant. Use it for everyday monitoring, heating and hot-water control, automations, and
+troubleshooting.
 
 The integration uses the structured JSON endpoints behind Remocon.net. It is a **cloud-polling**
 integration, so it requires internet access and a working Remocon.net account; it does not connect
 directly to the heat pump over the local network.
 
-> [!IMPORTANT]
-> Galevo support is available in **v0.4.0-beta.3**, a GitHub prerelease. It includes the
-> controls from PR #4 wherever the gateway reports the required capabilities. BSB retains its
-> existing controls, names, entity IDs, and numeric input boxes.
->
-> You can run BSB (`systemType: 5`) and Galevo (`systemType: 3`) in the same Home Assistant
-> instance. Each heat pump needs its own Remocon gateway and Home Assistant config entry.
+> [!NOTE]
+> BSB (`systemType: 5`) and Galevo (`systemType: 3`) can run in the same Home Assistant instance.
+> Add one integration entry per Remocon gateway.
 
 ![ELCO Aerotop heating and hot-water dashboard in Home Assistant](docs/images/home-assistant-dashboard.png)
 
 ## What you can do
 
-| Use case | Home Assistant experience |
-|---|---|
-| Monitor the system | Temperatures, pressure, flow values, operating state, and heat demand |
-| Control room heating and cooling | Native thermostat for supported BSB and Galevo zones, plus available comfort and reduced setpoints |
-| Control hot water | Native water-heater entity and mode and setpoint controls for both families |
-| Switch the plant mode | Summer, winter, heating-only, cooling, and off modes where the gateway offers them |
-| Manage holidays | BSB calendar and immediate holiday controls. Galevo plant holiday start and end dates with activation and cancellation |
-| Tune heating behavior | BSB holiday level, frost setpoint, heating curve, and summer/winter limit. Galevo quiet mode, hot-water boost, automatic thermoregulation, and available flow temperatures and offsets |
-| Build automations | Use temperatures, demand, operating state, and holiday periods as inputs |
-| Find problems | Controller errors, probe faults, maintenance codes, and appliance-health data |
-| Check the installation | Gateway connectivity, plant status, controller model, owner, location, and gateway version |
-| Investigate efficiency | Energy consumption history (GALEVO: heating/DHW/cooling usage from Remocon reports; BSB: optional historical heat, cooling, input-energy, and performance records) |
+The table describes the current source code. Check the release notes for the features in a
+specific downloadable version.
 
-The exact controls and readings depend on what the gateway reports. Unsupported capabilities are
-not presented as working controls, while temporarily missing controller values become unavailable
-instead of being guessed.
+| Feature | BSB (`systemType: 5`) | Galevo (`systemType: 3`) |
+|---|---|---|
+| **Room heating and cooling** | A thermostat per supported zone. Cooling controls follow the controller's cooling-active flag. | A thermostat per supported zone. The selected plant mode determines whether the thermostat controls heating or cooling. |
+| **Prepare the next season** | Comfort and reduced targets can be adjusted during their active season. | Adjust heating or cooling comfort and reduced targets in either season without changing the plant mode. |
+| **Domestic hot water** | Native water heater with Off, On, and Eco where offered, plus comfort and reduced targets. | Native water heater with Disabled, Time Based, and Always active. Adjust scheduled comfort and economy, or the always-active target. |
+| **Whole-system mode** | — | Select from the plant's offered modes, such as Summer, Winter, Heating Only, Cooling, Cooling Only, and Off. |
+| **Holidays** | View holidays in a read-only zone calendar. Start, extend, or cancel the current holiday. Zone 1 offers Reduced or Frost protection. | Enter plant-wide start and end dates. Use the Holiday switch to submit or cancel the period. |
+| **Heating configuration** | Frost-protection temperature, heating-curve slope, and summer/winter limit. | Heating and cooling flow temperatures and offsets, plus automatic thermoregulation. |
+| **Quiet mode and hot-water boost** | — | Dedicated on/off switches. |
+| **Energy history** | Optional annual history for energy used and delivered, cooling, and performance factor. | Heating, hot-water, and cooling consumption for the last 24 hours, 7 days, complete month, and 12 complete months. |
+| **Weekly programs** | Read-only schedule data in diagnostics. | Read-only schedule data in diagnostics. |
+| **Controller diagnostics** | Controller faults, maintenance, appliance health, and supported BSB datapoints. | Controller faults, bus device inventory, gateway signal level, and supported Remocon data items. |
+
+Both families provide current readings such as temperatures, pressure, flow, heat demand, and
+operating state, plus a manual refresh button. The gateway and installed probes determine which
+rows and readings apply. A dash means the integration provides no control for that feature on
+that family. See the [complete entity guide](docs/entities.md) and the
+[changelog](CHANGELOG.md).
 
 ```text
 Home Assistant entities
@@ -87,14 +88,11 @@ which the integration fetches in the background.
 
 ## Entities
 
-All entities belong to the ELCO Aerotop device, and the exact set is determined by the gateway's
-controller family and reported capabilities. Entities are family-aware: BSB datapoint entities
-(low-level 7xx parameters, boiler/maintenance details, the 80 historical energy records) are
-only created on BSB gateways, while GALEVO data-item entities (plant mode, quiet mode, DHW
-boost, thermoregulation, energy consumption reports) are only created on GALEVO gateways. The
-default device page focuses on native thermostat and hot-water controls, everyday measurements,
-and important fault information. Alternative controls and specialist diagnostics are available
-but mostly disabled by default to avoid overwhelming a normal installation.
+Each gateway has its own ELCO Aerotop device. BSB adds controller datapoints for heating
+configuration, boiler and maintenance details, and annual energy history. Galevo adds plant
+mode, quiet mode, hot-water boost, automatic thermoregulation, and consumption reports.
+The device page includes native thermostat and hot-water controls, everyday readings, and
+fault information. You can enable optional diagnostics in the device's entity settings.
 
 The [entity reference](docs/entities.md) contains the complete tables, entity-ID patterns, default
 states, creation conditions, read/write behavior, and explanations of maintenance, holiday, and
@@ -104,10 +102,9 @@ first registered.
 
 Remocon installation metadata is exposed as diagnostic entities when its JSON APIs return a
 value. This includes gateway online state, overall plant status, appliance model and serial,
-plant owner, account language, plant name/location, gateway serial, and gateway version. Some
-metadata endpoints are BSB-only; the corresponding entities are not created on GALEVO. Owner
-phone fields are optional and disabled by default. A separate **Last successful update**
-timestamp records when the integration most recently completed a core Remocon data capture,
+plant name and location, gateway serial, and gateway version. BSB also exposes plant owner and
+account language where returned. Owner phone fields are disabled by default. **Last successful
+update** records when the integration most recently completed a core Remocon data capture,
 including successful polls whose values did not change. Remocon's **Connectivity Gateway**
 software value and the integration's **Gateway firmware** value both come from `gwFwVer`; the
 integration creates one version sensor and also reuses that value in Home Assistant's device
@@ -115,8 +112,7 @@ information.
 
 ## Holidays
 
-Holiday support deliberately separates **viewing** from **writing**, and the write path differs by
-controller family:
+Holiday controls follow the controller family.
 
 - **BSB**: each zone's Home Assistant calendar is a read-only view of the valid holiday periods
   returned by the controller. The separate operating-level select, **Holiday until** date, and
@@ -131,9 +127,8 @@ and changes the zone to Automatic mode just like Remocon. Cancelling the holiday
 the mode that was active beforehand. Reduced and Frost protection use different controller
 setpoints and do not mean that heating is completely off.
 
-The integration does not currently expose Remocon's full underlying eight-slot planner. For the
-complete behavior, availability rules, calendar rationale, operating-level explanation, and a
-native Home Assistant dashboard example, see [Holiday periods in Home Assistant](docs/holidays.md).
+For both workflows, including the BSB calendar and its dashboard example, see
+[Holiday periods in Home Assistant](docs/holidays.md).
 
 ## How data is discovered
 
@@ -147,10 +142,9 @@ read-only discovery for:
 - errors, maintenance messages, and appliance-health information; and
 - metering and historical energy records.
 
-Core heating data loads first. Slower optional requests run independently in the background, so an
-unsupported schedule, maintenance, or BSB endpoint does not prevent the integration from loading.
-A temporarily failed datapoint becomes unavailable and is restored automatically after a
-successful read.
+Core heating data loads first. Optional requests run in the background. BSB probes include
+maintenance and annual records, while Galevo probes include menu items, bus inventory, and
+consumption reports. A temporarily failed datapoint can recover on a successful read.
 
 All runtime data comes from structured JSON endpoints; rendered web pages are not scraped. The
 integration also avoids scanning arbitrary controller addresses because unsupported BSB requests
@@ -170,21 +164,20 @@ ELCO Aerotop is included in the HACS default repository list. With HACS installe
 use the button above or:
 
 1. Open **HACS** in Home Assistant.
-2. Search for **ELCO Aerotop** and choose **Download**.
+2. Search for **ELCO Aerotop** and choose **Download**. For Galevo, select a version whose release
+   notes list Galevo support.
 3. Restart Home Assistant.
 4. Continue with [Home Assistant setup](#home-assistant-setup).
 
 No custom repository setup is needed. Existing installations continue to receive
 updates through HACS without reinstalling.
 
-To try the beta, select **v0.4.0-beta.3** in the HACS version picker or download its
-[`elco_aerotop.zip` release asset](https://github.com/thomasgregg/elco-aerotop/releases/tag/v0.4.0-beta.3)
-and install it manually. Restart Home Assistant and keep your existing BSB entry. Add
-the integration again to configure a Galevo gateway next to it.
+If the version you need is unavailable in HACS, install it manually using the instructions below.
 
 ### Option 2: Manual installation
 
-1. Download the release ZIP or clone this repository.
+1. Download `elco_aerotop.zip` from the chosen [GitHub release](https://github.com/thomasgregg/elco-aerotop/releases)
+   or check out the Git branch you want to install.
 2. Extract the contents of `elco_aerotop.zip` into the directory below, or copy the
    complete `custom_components/elco_aerotop` directory from the repository.
 
@@ -244,7 +237,8 @@ companion value. Every write therefore follows this sequence:
 
 1. Acquire a per-device command lock.
 2. Stop optional background discovery and acquire the shared gateway-traffic lock.
-3. Fetch uncached state only for the affected zone, or one zone plus plant state for a DHW change.
+3. Fetch uncached state for the affected zone or plant. BSB hot-water commands read one known
+   zone with the plant data. Galevo plant-wide commands use the mobile snapshot.
 4. Validate the requested value against current gateway limits or allowed options.
 5. Enforce the relationship between comfort and reduced temperatures.
 6. Preserve all unchanged companion values required by the endpoint.
@@ -261,32 +255,31 @@ and asks the user to check the controller or official application. This avoids d
 while still recovering automatically from a lost success response.
 
 Galevo plant mode uses the mobile `POST /api/v2/remote/plantData/{gateway}/mode`
-route with `{new, old}`. The beta refreshes the current mode and choices before sending,
+route with `{new, old}`. The integration refreshes the current mode and choices before sending,
 then reads back the result. A rejected request or a readback that still shows the old mode
 is reported as a failure. If a follow-up read fails after an acknowledgement, the outcome
 is reported as unknown.
 
-In **Time Based** mode, the Galevo **Scheduled hot water comfort temperature** number
-appears under Configuration when the controller reports writable, bounded settings.
-The command preserves the current economy setpoint and checks both setpoints on readback.
-The native water heater also supports mode changes and the always-active setpoint.
-A request to change both mode and temperature verifies the mode first and reports a partial
-result if the temperature cannot then be confirmed.
+Use the native Galevo water heater to set scheduled comfort in **Time Based** mode and the
+always-active target in **Always active** mode. A scheduled comfort change preserves the economy
+setpoint and checks both setpoints on readback. Existing **Scheduled hot water comfort temperature**
+numbers continue to work in Time Based mode. The integration honors read-only targets.
+A request to change both mode and temperature checks the destination target before switching mode
+and again after the mode is confirmed. It reports a partial result if only the mode changes.
 
 Polling and optional discovery use the same gateway-traffic lock. Optional discovery releases it
 between requests so a user command can proceed without overlapping controller traffic.
 
-The native and advanced controls are two views of those same validated values:
+Write commands preserve the controller values required by their endpoint.
 
 | User-facing control | Remocon value written | Preserved companion values |
 |---|---|---|
 | Thermostat target | Active heating or cooling comfort temperature | Matching reduced temperature and current zone payload |
-| Thermostat HVAC mode/preset | Zone operating mode | Fresh plant and zone payload |
-| Water-heater target | DHW comfort temperature | DHW reduced temperature and current mode |
-| Water-heater operation/on/off | DHW mode | DHW comfort and reduced temperatures |
-| Advanced number/select | Its corresponding value above | Same companions as the native entity |
-| Holiday-until date / cancel button | Current zone holiday period; setting also selects Automatic mode | Complete fresh plant and zone snapshots |
-| Holiday level and BSB tuning numbers | One exact allowlisted BSB address | Fresh compare-and-set values; controller readback required |
+| Zone HVAC mode or preset | Zone operating mode | BSB uses fresh plant and zone data. Galevo sends the previous mode. |
+| Hot-water target or mode | Comfort, reduced/economy, or operating mode | BSB uses the full comfort/reduced/mode group. Galevo preserves the scheduled pair and sends the previous value for individual mode or always-active target changes. |
+| BSB Holiday until or cancel | Current zone holiday. Setting it also selects Automatic mode. | Fresh plant and zone data |
+| Galevo Holiday switch | Plant-wide holiday period or cancellation | Local start and end dates for activation, and the local current time for cancellation |
+| BSB holiday level and tuning | One allowlisted BSB address | Fresh previous value and confirmed readback |
 
 All writable temperature numbers declare Home Assistant's temperature device class and native
 degrees Celsius unit, enabling correct temperature semantics and configured-unit conversion.
@@ -302,7 +295,14 @@ that was active before the holiday.
 
 The thermostat exposes `cool` when BSB reports cooling active or Galevo selects **Cooling**
 or **Cooling Only** as its plant mode. Use the Galevo plant-mode select to change the plant season.
-The thermostat's activity follows the controller's separate activity flags.
+Galevo temperature changes require the current plant mode. Zone temperature changes also require
+both comfort and reduced values for the selected season. The thermostat's activity follows the
+controller's separate activity flags.
+
+On Galevo zones that support both seasons, use **Off-season heating comfort temperature** or
+**Off-season cooling comfort temperature** under Configuration to prepare the inactive season.
+The per-season reduced temperatures also support these adjustments. Editing an off-season
+setpoint leaves the plant mode and active target as they were.
 
 ## Availability and refresh behavior
 
@@ -315,16 +315,16 @@ The thermostat's activity follows the controller's separate activity flags.
   when that snapshot follows a failed poll.
 - Zone entities are created from the discovered zones. A valid item that first appears in
   a later snapshot can register its entity then. Existing entities recover on later polls.
-- The integration registers a native zone thermostat when Remocon returns a comfort target and at
-  least one verified zone operating mode.
-- The integration registers a native water heater when Remocon returns a DHW comfort target and at
-  least one verified, allowed DHW mode.
+- A reported comfort target or mapped operating mode identifies a native thermostat or water heater.
+  Each entity offers the controls that the current snapshot supports. Missing data can temporarily
+  hide an action or make the entity unavailable. The entity recovers under its existing ID.
+- Standalone numbers expose separate targets such as reduced and economy. Standalone mode selects
+  cover additional controller modes. Previously registered controls keep their IDs and enabled settings.
 - Optional entities are created when the gateway advertises the feature or initial discovery
   finds the source value. An entity based on an advertised capability can remain unavailable
   until its first successful read.
-- Writable native, number, and select entities are omitted if Remocon does not provide enough
-  information to use them safely. Modes that a particular gateway does not offer are omitted from
-  that entity's supported mode list.
+- Every write still checks current gateway data. Native modes come from the options the gateway
+  reports for that entity.
 - Authentication expiry triggers one controlled login and request replay. A second authentication
   rejection starts Home Assistant's reauthentication flow.
 - Rejected credentials start Home Assistant's reauthentication flow.
@@ -387,7 +387,8 @@ allowed modes. Check diagnostics to see what the integration parsed.
 
 ### A write is rejected or does not remain set
 
-- Check that the comfort target is not below the corresponding reduced target.
+- Check the comfort and reduced targets. Heating comfort must be at or above reduced, while
+  cooling comfort must be at or below reduced.
 - Test a small change and verify it in the official Remocon application or on the controller.
 - Allow a few moments for the gateway and cloud to synchronize.
 - Restore the original value if the system behaves unexpectedly.
@@ -410,14 +411,14 @@ Inspect logs and diagnostic exports before sharing them.
 
 ## Compatibility
 
-The integration supports BSB and, in the beta, Galevo systems exposed through Remocon.net. An
-Aerotop product name alone does not establish compatibility: similar installations can use
-different controller and gateway families.
+The integration supports Remocon.net gateways with BSB or Galevo controllers. Check the
+controller family because installations with the same Aerotop model name can use different
+controllers. The gateway's reported capabilities determine the available features.
 
-| Controller family | How to identify it | Current status |
-|---|---|---|
-| BSB (`systemType: 5`) | The plant URL contains `/R2/BsbPlantDashboard/Index/` and the gateway exposes `PlantHomeBsb/GetData` | Supported; available entities still depend on the capabilities and values reported by the gateway |
-| Galevo (`systemType: 3`) | The plant URL contains `/R2/Plant/Index/` | Beta monitoring and controls. Availability follows the gateway's capabilities |
+| Supported controller | Typical Remocon plant URL |
+|---|---|
+| BSB (`systemType: 5`) | `/R2/BsbPlantDashboard/Index/` |
+| Galevo (`systemType: 3`) | `/R2/Plant/Index/` |
 
 Other controller families are not supported. The cloud API is undocumented and model capabilities
 vary, so formal compatibility is still being established. If the plant uses another URL or

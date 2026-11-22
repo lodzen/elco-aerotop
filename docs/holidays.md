@@ -1,20 +1,14 @@
 # Holiday periods in Home Assistant
 
-ELCO holiday handling has two distinct jobs:
-
-1. Show the periods that the controller already knows about.
-2. Safely reproduce Remocon's immediate/current-holiday workflow.
-
-The integration intentionally uses different Home Assistant entities for those jobs. The calendar
-is the read-only source of truth for periods returned by the controller. Dedicated configuration
-and control entities perform the small set of writes whose payloads and side effects have been
-verified.
+BSB and Galevo expose different holiday controls in Home Assistant. BSB shows returned holiday
+periods in a read-only zone calendar and lets you start, extend, or cancel a current holiday.
+Galevo lets you enter start and end dates for a plant-wide period and manage it with a switch.
 
 ## Galevo holiday controls
 
 1. Set **Pending holiday start** and **Pending holiday end** on the device page.
 2. Turn on **Holiday** to send the dates to the gateway.
-3. Turn off **Holiday** to request cancellation.
+3. Turn off **Holiday** to request cancellation of the controller's holiday.
 
 The date fields are a local draft and reset on reload. The switch reflects the controller's
 reported flag. Readback validates the end date when the gateway returns it. For a holiday
@@ -23,9 +17,7 @@ Some gateways may give too little information to confirm a future schedule. In t
 Home Assistant reports the unconfirmed result and the official application can show the
 schedule. The integration sends local date-times using the Home Assistant configuration.
 
-The remaining sections describe the BSB workflow.
-
-## Entity model
+## BSB holiday entities
 
 | Entity | Purpose | Access |
 |---|---|---|
@@ -38,7 +30,7 @@ The remaining sections describe the BSB workflow.
 The exact entity IDs contain the Home Assistant device name. Find them on the ELCO device page or
 under **Developer Tools → States** rather than guessing them.
 
-## Why the calendar is read-only
+### Why the BSB calendar is read-only
 
 Home Assistant's generic calendar editor supports fields such as arbitrary start and end times,
 summary, description, location, recurrence, and independent event deletion. ELCO does not expose
@@ -59,7 +51,7 @@ and automations see the controller's valid holiday periods without pretending th
 general-purpose calendar. Writes use dedicated entities whose meaning and side effects are
 explicit.
 
-## Current-holiday workflow
+### BSB current-holiday workflow
 
 The supported workflow mirrors Remocon's immediate holiday control:
 
@@ -82,7 +74,7 @@ Each command reads a fresh plant and zone snapshot, preserves all companion valu
 Remocon, sends one serialized write, reconciles ambiguous responses with a fresh read, and refreshes
 Home Assistant immediately. It never blindly replays a write after a timeout or disconnect.
 
-## Reduced versus Frost protection
+### Reduced versus Frost protection
 
 The operating level decides which heating reference is used while a holiday is active:
 
@@ -100,7 +92,7 @@ heating curve and are not guaranteed measured room temperatures.
 Changing the operating level does not itself create a holiday. It configures how the controller
 handles a holiday when one is active.
 
-## Availability and the eight-slot boundary
+### BSB availability and the eight-slot boundary
 
 Holiday entities are created only when the native zone response includes a holiday list. The list
 may be empty. A temporary failure makes the corresponding values unavailable instead of inventing
@@ -114,11 +106,8 @@ periods or reusing stale data.
 - Creating a new current period appends a new record only when the returned table is safe to extend.
   The integration refuses to guess how an unverified out-of-service (`osv`) slot should be reused.
 
-Although the controller can expose up to eight records, this release does not provide a slot picker
-or future-period planner. Full eight-slot management needs real gateway captures proving creation,
-replacement, deletion, ordering, overlap behavior, and out-of-service slot reuse. Until then, the
-read-only calendar can display valid returned periods, while writes remain limited to the first
-usable current holiday.
+The BSB calendar displays all valid periods returned from the controller's eight records. Writes
+apply to the first usable current holiday. Use Remocon to manage future starts and individual slots.
 
 ### Starting the first holiday from Developer Tools
 
@@ -137,7 +126,7 @@ data:
 This is an action example, not configuration for `configuration.yaml`. Replace the sample entity ID
 and date before running it. The same controller validation and write-safety policy applies.
 
-## Native Home Assistant dashboard example
+## BSB dashboard example
 
 The following view reproduces the test dashboard with built-in Home Assistant cards only. It uses
 a Sections view, Tile cards, a Button card with confirmation, and the standard Calendar card. It

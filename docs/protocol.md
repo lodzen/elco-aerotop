@@ -1,7 +1,7 @@
-# Remocon R2 protocol notes
+# Remocon.net protocol notes
 
-Remocon.net does not publish a supported public API for this equipment. These notes document the
-browser-facing JSON calls used by this integration so that changes can be reviewed deliberately.
+Remocon.net does not publish a supported public API for this equipment. These notes cover the
+browser and mobile JSON endpoints used by the integration for BSB and Galevo controllers.
 Never include credentials, session cookies, gateway IDs, or complete real-device responses in an
 issue.
 
@@ -15,7 +15,7 @@ issue.
 Each Home Assistant config entry owns an isolated cookie session. A `401`, `403`, or login-page
 HTML response invalidates the session and causes one controlled reauthentication attempt.
 
-Mobile-only endpoints such as `menuItems` require an independent token:
+Mobile endpoints such as `menuItems` require an independent token.
 
 ```text
 POST /api/v2/accounts/login  {"usr": "...", "pwd": "..."}
@@ -33,37 +33,38 @@ Configured zones are discovered through:
 GET /R2/Plant/Features/{gateway}?eagerMode=true
 ```
 
-Plant and zone state comes from:
+The integration reads `data.plant.systemType` to select the snapshot for each gateway.
 
-```text
-POST /R2/PlantHomeBsb/GetData/{gateway}
-```
+| Controller | Plant and zone snapshot |
+|---|---|
+| BSB (`5`) | `POST /R2/PlantHomeBsb/GetData/{gateway}`. Each request selects a zone and requests the needed plant and zone blocks. |
+| Galevo (`3`) | Mobile `dataItems/get` and `GET /api/v2/remote/zones/{gateway}/{zone}` for each configured zone. |
 
-The request selects a zone and independently requests the plant and zone blocks. A write always
-starts by reading uncached state.
-
-The integration retains the full `Features` response and every per-zone `GetData` response for
-schema inventory in redacted Home Assistant diagnostics. It does not log these payloads.
+Commands start with uncached state. Redacted Home Assistant diagnostics include the `Features`
+response and the current family's snapshot data for schema inspection.
 
 ## Optional read-only discovery
 
 The following calls expand model discovery without enabling any corresponding write operation:
 
-| Family | Method and path |
-|---|---|
-| Plant metadata | `GET /api/v2/remote/plants/lite` |
-| Live plant header | `GET /R2/Plant/PlantHeader/{gateway}` |
-| Plant owner metadata | `GET /R2/PlantData/GetUserData?id={gateway}` |
-| System data | `POST /api/v2/remote/dataItems/{gateway}/get?umsys=si` |
-| Native BSB plant snapshot | `GET /api/v2/remote/bsbPlantData/{gateway}` |
-| Mobile menu items | `GET /api/v2/menuItems/{gateway}?menuItems={id}` for one feature-selected documented ID |
-| Time programs | `POST /R2/PlantTimeProgBsb/GetData/{gateway}` with a program-ID filter |
-| Metering | `POST /R2/PlantMetering/GetData/{gateway}` |
-| Maintenance | `GET /R2/PlantData/GetMaintenanceData?id={gateway}` |
-| Automated monitoring | `GET /R2/AutomatedMonitoring/GetDrawerData/{gateway}` |
-| BSB appliance data | `GET /R2/PlantData/GetBsbBoilerData?id={gateway}` |
-| Controller errors | `GET /api/v2/busErrors?gatewayId={gateway}&blockingOnly=False&culture=en-US` |
-| BSB parameters | `GET /R2/PlantMenuBsb/ReadDataPoints/{gateway}?addresses=...` |
+| Source | Controller | Method and path |
+|---|---|---|
+| Plant metadata | Both | `GET /api/v2/remote/plants/lite` |
+| Live plant header | Both | `GET /R2/Plant/PlantHeader/{gateway}` |
+| Controller errors | Both | `GET /api/v2/busErrors?gatewayId={gateway}&blockingOnly=False&culture=en-US` |
+| System data items | BSB | `POST /api/v2/remote/dataItems/{gateway}/get?umsys=si`. Galevo uses this endpoint for its core snapshot. |
+| Plant owner metadata | BSB | `GET /R2/PlantData/GetUserData?id={gateway}` |
+| Native BSB plant snapshot | BSB | `GET /api/v2/remote/bsbPlantData/{gateway}` |
+| Time programs | BSB | `POST /R2/PlantTimeProgBsb/GetData/{gateway}` with a program-ID filter |
+| Metering | BSB | `POST /R2/PlantMetering/GetData/{gateway}` |
+| Maintenance | BSB | `GET /R2/PlantData/GetMaintenanceData?id={gateway}` |
+| Automated monitoring | BSB | `GET /R2/AutomatedMonitoring/GetDrawerData/{gateway}` |
+| Appliance data | BSB | `GET /R2/PlantData/GetBsbBoilerData?id={gateway}` |
+| Controller datapoints | BSB | `GET /R2/PlantMenuBsb/ReadDataPoints/{gateway}?addresses=...` |
+| Mobile menu items | Galevo | `GET /api/v2/menuItems/{gateway}?menuItems={id}` |
+| Time programs | Galevo | `GET /api/v2/remote/timeProgs/{gateway}/{programId}` |
+| Bus inventory | Galevo | `GET /api/v2/remote/plants/{gateway}/busDevices` |
+| Consumption series | Galevo | `GET /api/v2/remote/reports/{gateway}/consSequencesApi8?usages=Ch,Dhw,Cooling&hasSlp=false` |
 
 BSB display line numbers such as 700 and 720 are not accepted as read addresses. The integration
 uses a code-reviewed allowlist of controller-internal datapoint IDs. Optional calls run
@@ -91,10 +92,9 @@ fixed-date slots are read as ten isolated eight-address requests. Each slot has 
 performance factor, delivered heating/DHW/cooling energy, and input heating/DHW/cooling energy.
 This read remains applicable when `Features.hasMetering` is false.
 
-The menu-item IDs are a bounded mobile-API catalog, not raw BSB addresses. Reads are made one ID at
-a time because some controller families reject an unsupported ID rather than omitting it. Capturing
-successful results is read-only capability discovery; it does not authorize a matching write or
-prove that an absent feature can be enabled.
+Galevo menu-item IDs come from a bounded mobile API catalog. The integration tries a batch and
+falls back to individual IDs when the batch yields no usable results. Menu-item discovery is
+read-only.
 
 `menuItems` belongs to the Galevo controller family. When `Features` reports `systemType: 5` (BSB),
 the integration skips that family and records `unsupported:bsb_system`; BSB discovery continues
@@ -108,19 +108,10 @@ after authentication. `Features` reports the controller family in `data.plant.sy
 features response reports `3`, the coordinator builds plant/zone state from the mobile
 data-item and zone endpoints instead of `PlantHomeBsb`:
 
-| Family | Method and path |
-|---|---|
-| Home items | `POST /R2/PlantHome/GetData/{gateway}` with `{features, filter, useCache, zone}` body |
-| System data items | `POST /api/v2/remote/dataItems/{gateway}/get?umsys=si` (shared with BSB discovery) |
-| Zone state | `GET /api/v2/remote/zones/{gateway}/{zone}` |
-| Time programs | `GET /api/v2/remote/timeProgs/{gateway}/{programId}` (same eProgId values 1–6, 7=DHW, 8, 9–14) |
-| Menu items | `GET /api/v2/menuItems/{gateway}?menuItems={id}` |
-| Consumption series | `GET /api/v2/remote/reports/{gateway}/consSequencesApi8?usages=…&hasSlp=…` |
-| System state | `GET /api/v2/remote/plantData/{gateway}/systemState` |
+The core snapshot uses the mobile `dataItems/get` and zone endpoints. The optional mobile
+time-program probe uses IDs 1–6 for heating, 7 for domestic hot water, and 9–14 for cooling.
 
-
-`PlantHome/GetData` is the R2 home-screen snapshot and the true counterpart of the BSB
-`GetData`: a GET returns 404, but a POST with the app's body shape
+The R2 home-screen snapshot `PlantHome/GetData` was compared during development. A POST with
 (`features` map including `gatewayId`, `filter: {notEssentials, plant, zone, dhw}`,
 `useCache`, `zone`) returns `data.items` plus `hasAdvancedSettings`/`hasDhw`. The item shape
 matches `dataItems`, additionally carrying localized `optTexts`, real min/max bounds and
@@ -175,10 +166,9 @@ Verified against a live Galevo gateway (`tools/remocon_probe.py`, `captures/`): 
 `zones/{1..3}`, `systemState`, `timeProgs/{1,7}`, `menuItems`, `busDevices`, `gatewayInfo`,
 `actions/mostRecent`, `plants`, `plants/features`, and the shared R2 `Features` endpoint all
 respond 200. `plantData/{mode,holiday,dhwTemp}` return HTTP 405 on GET (write-only paths).
-`GetMaintenanceData` and `GetDrawerData` report "session expired" under the R2 cookie session on
-this plant and are marked `unavailable` by the optional-probe policy. BSB-only families
-(`ReadDataPoints`, `GetBsbBoilerData`, `bsbPlantData`, `PlantMetering`) are skipped and recorded
-as `unsupported:system_family`.
+The captured Galevo session could not read the BSB maintenance and automated-monitoring routes.
+The integration uses the family-specific optional sources listed above and marks BSB-only
+probes `unsupported:system_family` on Galevo.
 
 Additional probes:
 
@@ -301,11 +291,15 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 `PlantDataProxy.set*` methods (`com.remotethermo.aristonnet.data.remote.proxies`),
 `ChangeValueDto`/`TemperaturesDto`/`SetDataItemsRequest`/`SetDataItemDto` DTOs.
 
-Beta.3 enables the Galevo controls implemented in PR #4. The recorded hardware checks
-covered plant mode and scheduled hot-water comfort. The broader controls have Home Assistant
+Galevo supports the controls listed in the [entity guide](entities.md). Recorded hardware checks
+cover plant mode and scheduled hot-water comfort. The broader controls have Home Assistant
 regression coverage with mocked responses. Commands use a fresh read, gateway-provided limits
-where available, and serialized readback checks. A combined hot-water request verifies the
-mode before changing the temperature and reports a partial result when the second stage fails.
+where available, and serialized readback checks. Zone setpoint writes require `PlantMode` and
+both values for the requested season. The thermostat writes to the active season. Galevo's
+standalone temperature controls can edit the inactive season via the same heating or cooling
+endpoint without changing `PlantMode`. Hot-water writes honor `readOnly` and `ro` on changed
+setpoints. A combined hot-water request validates the destination setpoint before switching modes
+and again after confirming the mode. It reports a partial result when only the mode changes.
 BSB uses its existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):
@@ -335,9 +329,9 @@ wire keys:** `POST /api/v2/remote/plantData/{gw}/mode` with the Kotlin
 wire names (`{"new":0,"old":1}` — `ePlantMode`: Summer 0, Winter 1,
 HeatingOnly 2, Cooling 3, CoolingOnly 4, Off 5) the same route applies the
 mode: `{"success": true}` followed by `PlantMode=0`, verified both
-directions (Winter→Summer→Winter) on 2026-11-19. The beta uses this mobile route for plant-mode writes and confirms the result with an uncached read; the R2 `PlantHome/SetData` contract
-(`{features, prevItems, viewModel}` → `changedItems`) remains documented
-below as the browser-app alternative. `viewModel` carries the semantic fields
+directions (Winter→Summer→Winter) on 2026-11-19. The integration uses this mobile route and
+confirms the result with an uncached read. The browser-app contract shown above uses
+`{features, prevItems, viewModel}` and returns `changedItems`. `viewModel` carries the semantic fields
 (zone context, temperature items, mode flags); pure display strings
 (bottomSheet/weather icon texts) are omitted as they cannot affect the
 server-side command.
@@ -375,7 +369,7 @@ and is the single family signal for entity platforms. Registration rules:
   `hvInputOff` and `hydraulicScheme` is unverified — Features reports them as `null`
   and they are passed through unchanged.
 
-## Writing state
+## BSB write contracts
 
 Heating and cooling comfort/reduced setpoints use the same atomic-pair endpoint:
 
@@ -399,10 +393,9 @@ POST /R2/PlantDhwBsb/Save/{gateway}
 Its body contains the full fresh `plantData` snapshot plus `comfortTemp`, `reducedTemp`, and
 `dhwMode`.
 
-Runtime polling, background discovery, and write sequences share one gateway-traffic lock. A user
-command cancels optional discovery before its uncached read and write, and its immediate state
-refresh does not start another slow discovery pass. A zone write reads only that zone; a DHW write
-requests plant state through one known zone instead of reading every zone.
+Both families serialize polling, discovery, and writes through a gateway-traffic lock. A command
+cancels optional discovery before its uncached read and write. A BSB zone write reads the affected
+zone, and a BSB hot-water write requests plant state through one known zone.
 
 `GetData` has a complete-operation deadline of 70 seconds per requested zone. Within that same
 budget, the whole snapshot restarts once after a fast non-TLS transport interruption, a controller

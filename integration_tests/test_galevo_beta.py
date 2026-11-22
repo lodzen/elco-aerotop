@@ -7,10 +7,12 @@ from datetime import date, datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.components.climate.const import ClimateEntityFeature
+from homeassistant.components.water_heater import WaterHeaterEntityFeature
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from test_lifecycle import DOMAIN, GATEWAY_ID, existing_entry, fake_gateway
+from test_lifecycle import DOMAIN, GATEWAY_ID, existing_entry, fake_gateway, make_entry
 
 from custom_components.elco_aerotop import config_flow
 from custom_components.elco_aerotop.api import ElcoConnectionError, ElcoResponseError
@@ -46,8 +48,7 @@ def galevo_fixture(hass, monkeypatch):
         ), snapshot_items
 
     api.async_get_galevo_data.side_effect = read
-    entry, _, _ = existing_entry(hass)
-    return api, entry, items
+    return api, make_entry(hass), items
 
 
 def _plant_mode(value=1, *, read_only=False):
@@ -73,12 +74,27 @@ def _scheduled_dhw_items(mode=1):
     }
 
 
+def _existing_scheduled_comfort(hass, entry):
+    return (
+        er.async_get(hass)
+        .async_get_or_create(
+            "number",
+            DOMAIN,
+            f"{GATEWAY_ID}_dhw_scheduled_comfort_temperature",
+            suggested_object_id="existing_scheduled_comfort",
+            config_entry=entry,
+        )
+        .entity_id
+    )
+
+
 @pytest.mark.parametrize("readback", ["confirmed", "unchanged", "economy_changed"])
 async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
     hass, galevo_fixture, readback
 ):
     api, entry, items = galevo_fixture
     items.update(_scheduled_dhw_items())
+    number = _existing_scheduled_comfort(hass, entry)
 
     def write(*, comfort, economy, old_comfort, old_economy):
         if readback != "unchanged":
@@ -90,11 +106,8 @@ async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     registry = er.async_get(hass)
-    number = registry.async_get_entity_id(
-        "number", DOMAIN, f"{GATEWAY_ID}_dhw_scheduled_comfort_temperature"
-    )
     assert hass.states.get(number).attributes["mode"] == "box"
-    assert registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_dhw_mode") is not None
+    assert registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_dhw_mode") is None
     assert (
         registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_dhw_reduced_temperature")
         is not None
@@ -118,16 +131,13 @@ async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
 async def test_scheduled_comfort_checks_fresh_mode_availability_and_bounds(hass, galevo_fixture):
     api, entry, items = galevo_fixture
     items.update(_scheduled_dhw_items(mode=2))
+    number = _existing_scheduled_comfort(hass, entry)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
-    registry = er.async_get(hass)
-    unique_id = f"{GATEWAY_ID}_dhw_scheduled_comfort_temperature"
-    assert registry.async_get_entity_id("number", DOMAIN, unique_id) is None
     coordinator = entry.runtime_data
     items.update(_scheduled_dhw_items())
     await coordinator.async_refresh()
     await hass.async_block_till_done(wait_background_tasks=True)
-    number = registry.async_get_entity_id("number", DOMAIN, unique_id)
     assert float(hass.states.get(number).state) == 53
 
     for value, error in [(39, "below economy"), (61, "above the maximum"), (52.5, "step")]:
@@ -140,6 +150,97 @@ async def test_scheduled_comfort_checks_fresh_mode_availability_and_bounds(hass,
     await coordinator.async_refresh()
     assert hass.states.get(number).state == "unavailable"
     api.async_set_galevo_dhw_timeprog_temperatures.assert_not_awaited()
+
+
+@pytest.mark.parametrize("missing", ["target", "options"])
+async def test_native_controls_recover_from_partial_discovery(hass, galevo_fixture, missing):
+    api, entry, items = galevo_fixture
+    full = _scheduled_dhw_items() | {
+        "PlantMode:0": {"value": 1},
+        "ZoneMode:1": {"value": 3, "options": [0, 1, 2, 3]},
+        "ZoneComfortTemp:1": {"value": 21, "min": 10, "max": 30},
+        "ZoneEconomyTemp:1": {"value": 17},
+    }
+    items.update(full)
+    if missing == "target":
+        del items["ZoneComfortTemp:1"], items["DhwTimeProgComfortTemp:0"]
+    else:
+        items["ZoneMode:1"] = {"value": 3}
+        items["DhwMode:0"] = {"value": 1}
+
+    def read(*args, **kwargs):
+        snapshot = {key: dict(item) for key, item in items.items()}
+        return ElcoData(
+            GATEWAY_ID,
+            PlantState.from_galevo(snapshot),
+            {1: ZoneState.from_galevo(1, {}, snapshot)},
+        ), snapshot
+
+    api.async_get_galevo_data.side_effect = read
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    thermostat = registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    climate_features = hass.states.get(thermostat).attributes["supported_features"]
+    heater_features = hass.states.get(heater).attributes["supported_features"]
+    assert bool(climate_features & ClimateEntityFeature.TARGET_TEMPERATURE) == (
+        missing == "options"
+    )
+    assert bool(heater_features & WaterHeaterEntityFeature.TARGET_TEMPERATURE) == (
+        missing == "options"
+    )
+    assert bool(climate_features & ClimateEntityFeature.PRESET_MODE) == (missing == "target")
+    assert bool(heater_features & WaterHeaterEntityFeature.OPERATION_MODE) == (missing == "target")
+
+    if missing == "target":
+
+        def set_operation(plant, *, comfort, reduced, mode):
+            items["DhwMode:0"] = {**items["DhwMode:0"], "value": GALEVO_DHW_MODE_TO_RAW[mode]}
+
+        api.async_set_galevo_dhw_settings.side_effect = set_operation
+        await hass.services.async_call(
+            "water_heater",
+            "set_operation_mode",
+            {"entity_id": heater, "operation_mode": "off"},
+            blocking=True,
+        )
+        assert hass.states.get(heater).state == "off"
+
+    items.update(full)
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(thermostat).attributes["temperature"] == 21
+    assert hass.states.get(thermostat).attributes["preset_modes"] == ["eco", "comfort"]
+    assert hass.states.get(heater).attributes["temperature"] == 53
+    assert hass.states.get(heater).attributes["operation_list"] == [
+        "off",
+        "heat_pump",
+        "performance",
+    ]
+
+    items.clear()
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(thermostat).state == "unavailable"
+    assert hass.states.get(heater).state == "unavailable"
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(thermostat).state == "unavailable"
+    assert hass.states.get(heater).state == "unavailable"
+    items.update(full)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(thermostat).attributes["temperature"] == 21
+    assert hass.states.get(heater).attributes["temperature"] == 53
+    for domain, key in (
+        ("select", "dhw_mode"),
+        ("select", "zone_1_mode"),
+        ("number", "dhw_comfort_temperature"),
+        ("number", "dhw_scheduled_comfort_temperature"),
+        ("number", "zone_1_comfort_temperature"),
+    ):
+        assert registry.async_get_entity_id(domain, DOMAIN, f"{GATEWAY_ID}_{key}") is None
 
 
 async def test_late_capability_energy_and_privacy(hass, galevo_fixture):
@@ -396,7 +497,8 @@ async def test_galevo_thermostat_and_zone_mode_follow_selected_plant_mode(
     def write_zone_mode(plant, zone, *, mode):
         items["ZoneMode:1"]["value"] = GALEVO_ZONE_MODE_TO_RAW[mode]
 
-    def write_temperature(zone, *, comfort, reduced, cooling):
+    def write_temperature(zone, *, comfort, reduced, cooling, season):
+        assert season == "active"
         key = "ZoneComfortCoolingTemp:1" if cooling else "ZoneComfortTemp:1"
         items[key]["value"] = comfort
 
@@ -415,28 +517,302 @@ async def test_galevo_thermostat_and_zone_mode_follow_selected_plant_mode(
         "climate", "set_hvac_mode", {"entity_id": thermostat, "hvac_mode": hvac_mode}, blocking=True
     )
     assert hass.states.get(thermostat).state == hvac_mode
-    assert hass.states.get(select) is None  # The advanced select is disabled by default.
+    assert select is None
+    for key in ("comfort_temperature", "cooling_comfort_temperature"):
+        assert registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_zone_1_{key}") is None
+    for key in ("reduced_temperature", "cooling_reduced_temperature"):
+        assert (
+            registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_zone_1_{key}") is not None
+        )
     await hass.services.async_call(
         "climate", "set_temperature", {"entity_id": thermostat, "temperature": 23}, blocking=True
     )
     assert api.async_set_zone_temperatures.await_args.kwargs["cooling"] is cooling
     assert hass.states.get(thermostat).attributes["temperature"] == 23
 
+    # The other season can lack its current target while still offering modes.
+    items["PlantMode:0"]["value"] = 1 if cooling else 3
+    new_target = "ZoneComfortTemp:1" if cooling else "ZoneComfortCoolingTemp:1"
+    saved_target = items.pop(new_target)
+    await entry.runtime_data.async_refresh()
+    assert ("heat" if cooling else "cool") in hass.states.get(thermostat).attributes["hvac_modes"]
+    assert not hass.states.get(thermostat).attributes["supported_features"] & (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+    )
+    assert registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_zone_1_mode") is None
+    items[new_target] = saved_target
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(thermostat).attributes["temperature"] == saved_target["value"]
 
-@pytest.mark.parametrize("reject_temperature", [False, True])
+
+@pytest.mark.parametrize(
+    ("changed_item", "new_item", "error"),
+    [
+        ("PlantMode:0", None, "current plant season"),
+        ("PlantMode:0", {"value": 1}, "only be changed while the zone is in heating mode"),
+        ("ZoneEconomyCoolingTemp:1", None, "both zone temperatures"),
+    ],
+)
+async def test_zone_temperature_requires_fresh_season_and_both_targets(
+    hass, galevo_fixture, changed_item, new_item, error
+):
+    api, entry, items = galevo_fixture
+    items.update(
+        {
+            "PlantMode:0": {"value": 3, "options": [1, 3]},
+            "ZoneMode:1": {"value": 2, "options": [0, 1, 2, 3]},
+            "ZoneComfortTemp:1": {"value": 21},
+            "ZoneEconomyTemp:1": {"value": 17},
+            "ZoneComfortCoolingTemp:1": {"value": 23},
+            "ZoneEconomyCoolingTemp:1": {"value": 27},
+        }
+    )
+
+    def read(*args, **kwargs):
+        snapshot = {key: dict(item) for key, item in items.items()}
+        zone = ZoneState.from_galevo(1, {"heat": False, "isCoolingActive": False}, snapshot)
+        return ElcoData(GATEWAY_ID, PlantState.from_galevo(snapshot), {1: zone}), snapshot
+
+    def write(zone, *, comfort, reduced, cooling, season):
+        assert season == "active"
+        assert cooling and reduced == 27
+        items["ZoneComfortCoolingTemp:1"]["value"] = comfort
+
+    api.async_get_galevo_data.side_effect = read
+    api.async_set_zone_temperatures.side_effect = write
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    thermostat = registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    service_data = {"entity_id": thermostat, "temperature": 24}
+    assert hass.states.get(thermostat).attributes["temperature"] == 23
+
+    saved_item = items.pop(changed_item)
+    if new_item is not None:
+        items[changed_item] = new_item
+    with pytest.raises(HomeAssistantError, match=error):
+        await hass.services.async_call("climate", "set_temperature", service_data, blocking=True)
+    api.async_set_zone_temperatures.assert_not_awaited()
+
+    await entry.runtime_data.async_refresh()
+    state = hass.states.get(thermostat)
+    if new_item is not None:
+        assert state.attributes["temperature"] == 21
+        assert "heat" in state.attributes["hvac_modes"]
+    else:
+        assert not state.attributes["supported_features"] & ClimateEntityFeature.TARGET_TEMPERATURE
+    if changed_item == "PlantMode:0" and new_item is None:
+        assert state.attributes["hvac_modes"] == ["off", "auto"]
+        assert state.attributes.get("temperature") is None
+    assert state.attributes["hvac_action"] == "idle"
+
+    items[changed_item] = saved_item
+    await entry.runtime_data.async_refresh()
+    await hass.services.async_call("climate", "set_temperature", service_data, blocking=True)
+    assert hass.states.get(thermostat).attributes["temperature"] == 24
+    api.async_set_zone_temperatures.assert_awaited_once()
+
+
+@pytest.mark.parametrize("plant_mode", [1, 3])
+async def test_galevo_off_season_setpoints_keep_the_active_target(hass, galevo_fixture, plant_mode):
+    api, entry, items = galevo_fixture
+    items.update(
+        {
+            "PlantMode:0": {"value": plant_mode, "options": [1, 3]},
+            "ZoneMode:1": {"value": 2, "options": [0, 1, 2, 3]},
+            "ZoneComfortTemp:1": {"value": 22, "min": 15, "max": 30},
+            "ZoneEconomyTemp:1": {"value": 17},
+            "ZoneComfortCoolingTemp:1": {"value": 24, "min": 19, "max": 28},
+            "ZoneEconomyCoolingTemp:1": {"value": 28},
+        }
+    )
+
+    off_season_cooling = plant_mode == 1
+    season_label = "cooling" if off_season_cooling else "heating"
+    active_label = "heating" if off_season_cooling else "cooling"
+    native_target = 22 if off_season_cooling else 24
+    comfort_key, reduced_key = (
+        ("ZoneComfortCoolingTemp:1", "ZoneEconomyCoolingTemp:1")
+        if off_season_cooling
+        else ("ZoneComfortTemp:1", "ZoneEconomyTemp:1")
+    )
+    initial_comfort = items[comfort_key]["value"]
+    initial_reduced = items[reduced_key]["value"]
+
+    def read(*args, **kwargs):
+        snapshot = {key: dict(item) for key, item in items.items()}
+        zone = ZoneState.from_galevo(1, {}, snapshot)
+        return ElcoData(GATEWAY_ID, PlantState.from_galevo(snapshot), {1: zone}), snapshot
+
+    def write(zone, *, comfort, reduced, cooling, season):
+        assert cooling is off_season_cooling
+        items[comfort_key]["value"] = comfort
+        items[reduced_key]["value"] = reduced
+
+    api.async_get_galevo_data.side_effect = read
+    api.async_set_zone_temperatures.side_effect = write
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    thermostat = registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    off_season = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_zone_1_off_season_{season_label}_comfort_temperature"
+    )
+    other_number = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_zone_1_off_season_{active_label}_comfort_temperature"
+    )
+    assert hass.states.get(other_number).state == "unavailable"
+    assert float(hass.states.get(off_season).state) == initial_comfort
+    assert hass.states.get(off_season).attributes["mode"] == "box"
+    assert hass.states.get(off_season).attributes["min"] == items[comfort_key]["min"]
+    assert hass.states.get(thermostat).attributes["temperature"] == native_target
+
+    service_data = {"entity_id": off_season, "value": initial_comfort + 1}
+    items["PlantMode:0"]["value"] = 3 if off_season_cooling else 1
+    with pytest.raises(HomeAssistantError, match="season is now active"):
+        await hass.services.async_call("number", "set_value", service_data, blocking=True)
+    items["PlantMode:0"]["value"] = plant_mode
+    saved_reduced = items.pop(reduced_key)
+    with pytest.raises(HomeAssistantError, match="both zone temperatures"):
+        await hass.services.async_call("number", "set_value", service_data, blocking=True)
+    items[reduced_key] = saved_reduced
+    items[comfort_key]["readOnly"] = True
+    with pytest.raises(HomeAssistantError, match="read-only"):
+        await hass.services.async_call("number", "set_value", service_data, blocking=True)
+    api.async_set_zone_temperatures.assert_not_awaited()
+    items[comfort_key]["readOnly"] = False
+
+    await hass.services.async_call("number", "set_value", service_data, blocking=True)
+    sent = api.async_set_zone_temperatures.await_args.kwargs
+    assert sent == {
+        "comfort": initial_comfort + 1,
+        "reduced": initial_reduced,
+        "cooling": off_season_cooling,
+        "season": "inactive",
+    }
+    assert float(hass.states.get(off_season).state) == initial_comfort + 1
+
+    variant = "cooling_" if off_season_cooling else ""
+    reduced = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_zone_1_{variant}reduced_temperature"
+    )
+    new_reduced = initial_reduced + (1 if off_season_cooling else -1)
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": reduced, "value": new_reduced}, blocking=True
+    )
+    assert api.async_set_zone_temperatures.await_args.kwargs == {
+        "comfort": initial_comfort + 1,
+        "reduced": new_reduced,
+        "cooling": off_season_cooling,
+        "season": "either",
+    }
+    assert hass.states.get(thermostat).attributes["temperature"] == native_target
+    assert items["PlantMode:0"]["value"] == plant_mode
+    api.async_set_galevo_plant_mode.assert_not_awaited()
+
+    items["PlantMode:0"]["value"] = 3 if off_season_cooling else 1
+    await entry.runtime_data.async_refresh()
+    assert hass.states.get(off_season).state == "unavailable"
+    assert float(hass.states.get(other_number).state) == native_target
+    assert hass.states.get(thermostat).attributes["temperature"] == initial_comfort + 1
+
+
+@pytest.mark.parametrize("legacy_enabled", [False, True])
+async def test_galevo_off_season_comfort_preserves_existing_registry_choice(
+    hass, galevo_fixture, legacy_enabled
+):
+    api, entry, items = galevo_fixture
+    items.update(
+        {
+            "PlantMode:0": {"value": 1},
+            "ZoneComfortCoolingTemp:1": {"value": 24},
+            "ZoneEconomyCoolingTemp:1": {"value": 28},
+        }
+    )
+
+    def read(*args, **kwargs):
+        snapshot = {key: dict(item) for key, item in items.items()}
+        zone = ZoneState.from_galevo(1, {}, snapshot)
+        return ElcoData(GATEWAY_ID, PlantState.from_galevo(snapshot), {1: zone}), snapshot
+
+    api.async_get_galevo_data.side_effect = read
+    registry = er.async_get(hass)
+    legacy = registry.async_get_or_create(
+        "number",
+        DOMAIN,
+        f"{GATEWAY_ID}_zone_1_cooling_comfort_temperature",
+        suggested_object_id="existing_cooling_comfort",
+        config_entry=entry,
+        disabled_by=None if legacy_enabled else er.RegistryEntryDisabler.INTEGRATION,
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert registry.async_get(legacy.entity_id).disabled is not legacy_enabled
+    off_season = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_zone_1_off_season_cooling_comfort_temperature"
+    )
+    assert (off_season is None) is legacy_enabled
+    entity_id = legacy.entity_id if legacy_enabled else off_season
+    assert float(hass.states.get(entity_id).state) == 24
+
+
+async def test_water_heater_rechecks_read_only_target_before_writing(hass, galevo_fixture):
+    api, entry, items = galevo_fixture
+    items.update(_scheduled_dhw_items())
+    items["DhwTemp:0"] = {"value": 55}
+    comfort = items["DhwTimeProgComfortTemp:0"]
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    service_data = {"entity_id": heater, "temperature": 52}
+    assert hass.states.get(heater).attributes["temperature"] == 53
+
+    comfort["readOnly"] = True
+    with pytest.raises(HomeAssistantError, match="scheduled DHW comfort setpoint is read-only"):
+        await hass.services.async_call(
+            "water_heater", "set_temperature", service_data, blocking=True
+        )
+    api.async_set_galevo_dhw_settings.assert_not_awaited()
+
+    await entry.runtime_data.async_refresh()
+    features = hass.states.get(heater).attributes["supported_features"]
+    assert not features & WaterHeaterEntityFeature.TARGET_TEMPERATURE
+    assert features & WaterHeaterEntityFeature.OPERATION_MODE
+
+    comfort["readOnly"] = False
+    await entry.runtime_data.async_refresh()
+    assert (
+        hass.states.get(heater).attributes["supported_features"]
+        & WaterHeaterEntityFeature.TARGET_TEMPERATURE
+    )
+
+
+@pytest.mark.parametrize(
+    "target_result", ["confirmed", "rejected", "read_only", "becomes_read_only"]
+)
 async def test_native_water_heater_combines_mode_and_target_with_partial_result(
-    hass, galevo_fixture, reject_temperature
+    hass, galevo_fixture, target_result
 ):
     api, entry, items = galevo_fixture
     items.update(_scheduled_dhw_items())
-    items["DhwTemp:0"] = {"value": 55, "min": 42, "max": 65}
+    items["DhwTemp:0"] = {
+        "value": 55,
+        "min": 42,
+        "max": 65,
+        "readOnly": target_result == "read_only",
+    }
 
     def write(plant, *, comfort, reduced, mode):
         if mode is not None:
             items["DhwMode:0"]["value"] = GALEVO_DHW_MODE_TO_RAW[mode]
+            if target_result == "becomes_read_only":
+                items["DhwTemp:0"]["readOnly"] = True
         if comfort is not None:
             assert plant.dhw_mode.value == 3
-            if reject_temperature:
+            if target_result == "rejected":
                 raise ElcoResponseError("Rejected")
             items["DhwTemp:0"]["value"] = comfort
 
@@ -447,22 +823,38 @@ async def test_native_water_heater_combines_mode_and_target_with_partial_result(
     heater = registry.async_get_entity_id(
         "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
     )
+    assert registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_dhw_mode") is None
+    for key in ("dhw_comfort_temperature", "dhw_scheduled_comfort_temperature"):
+        assert registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_{key}") is None
+    assert (
+        registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_dhw_reduced_temperature")
+        is not None
+    )
     call = hass.services.async_call(
         "water_heater",
         "set_temperature",
         {"entity_id": heater, "temperature": 56, "operation_mode": "performance"},
         blocking=True,
     )
-    if reject_temperature:
+    if target_result == "read_only":
+        with pytest.raises(HomeAssistantError, match="always-active DHW setpoint is read-only"):
+            await call
+        api.async_set_galevo_dhw_settings.assert_not_awaited()
+        assert hass.states.get(heater).state == "heat_pump"
+        return
+    if target_result in {"rejected", "becomes_read_only"}:
         with pytest.raises(HomeAssistantError, match="mode changed, but the temperature"):
             await call
     else:
         await call
-    assert [
+    submitted_targets = [
         call.kwargs["comfort"] for call in api.async_set_galevo_dhw_settings.await_args_list
-    ] == [None, 56]
+    ]
+    assert submitted_targets == ([None] if target_result == "becomes_read_only" else [None, 56])
     assert hass.states.get(heater).state == "performance"
-    assert hass.states.get(heater).attributes["temperature"] == (55 if reject_temperature else 56)
+    assert hass.states.get(heater).attributes["temperature"] == (
+        56 if target_result == "confirmed" else 55
+    )
     assert hass.states.get(heater).attributes["min_temp"] == 42
 
 

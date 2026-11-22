@@ -160,7 +160,7 @@ async def test_galevo_zone_temperature_dispatch_validates(
     zone = ZoneState.from_galevo(
         1,
         {"comf": {"value": 20, "min": 10, "max": 30}, "econ": {"value": 16}},
-        {},
+        {"PlantMode:0": {"value": 1}},
     )
 
     with pytest.raises(ValueError, match="below reduced"):

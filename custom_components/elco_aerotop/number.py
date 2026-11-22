@@ -19,7 +19,7 @@ from .const import (
 )
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import ElcoData, NumericVariable, galevo_item_writable
+from .models import ElcoData, NumericVariable, ZoneSetpointSeason, galevo_item_writable
 
 
 class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
@@ -36,12 +36,10 @@ class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
         variable_fn,
         write_fn,
         *,
-        enabled_default: bool = True,
         available_fn: Callable[[ElcoData], bool] | None = None,
     ) -> None:
         super().__init__(coordinator, key)
         self._attr_name = name
-        self._attr_entity_registry_enabled_default = enabled_default
         self._variable_fn = variable_fn
         self._write_fn = write_fn
         self._available_fn = available_fn
@@ -68,8 +66,10 @@ class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and (
-            self._available_fn is None or self._available_fn(self.coordinator.data)
+        return (
+            super().available
+            and self.native_value is not None
+            and (self._available_fn is None or self._available_fn(self.coordinator.data))
         )
 
     async def async_set_native_value(self, value: float) -> None:
@@ -209,6 +209,45 @@ async def async_setup_entry(
     async_setup_platform_entities(entry, async_add_entities, _create_entities)
 
 
+def _zone_temperature_number(
+    coordinator: ElcoDataUpdateCoordinator,
+    zone_number: int,
+    *,
+    cooling: bool,
+    reduced: bool = False,
+    season: ZoneSetpointSeason,
+) -> ElcoTemperatureNumber:
+    setting = "reduced" if reduced else "comfort"
+    label = f"{'cooling ' if cooling else ''}{setting} temperature"
+    kind = f"{'cooling_' if cooling else ''}{setting}"
+    if season == "inactive":
+        label = f"off-season {'cooling' if cooling else 'heating'} {setting} temperature"
+        suffix = f"off_season_{'cooling' if cooling else 'heating'}_{setting}_temperature"
+    else:
+        suffix = f"{kind}_temperature"
+
+    def variable(data: ElcoData) -> NumericVariable:
+        return data.zones[zone_number].temperature_variables(cooling=cooling)[int(reduced)]
+
+    def available(data: ElcoData) -> bool:
+        zone = data.zones[zone_number]
+        return (
+            not variable(data).read_only
+            and zone.temperature_write_error(cooling=cooling, season=season) is None
+        )
+
+    return ElcoTemperatureNumber(
+        coordinator,
+        f"zone_{zone_number}_{suffix}",
+        f"Zone {zone_number} {label}",
+        variable,
+        lambda value: coordinator.async_set_zone_temperature(
+            zone_number, kind, value, season=season
+        ),
+        available_fn=available if season != "active" else None,
+    )
+
+
 def _create_entities(
     coordinator: ElcoDataUpdateCoordinator,
     async_add_entities,
@@ -220,31 +259,36 @@ def _create_entities(
         and GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED
         and supports_scheduled_dhw_comfort_write(coordinator.data)
     ):
-        entities.append(
-            ElcoTemperatureNumber(
-                coordinator,
-                "dhw_scheduled_comfort_temperature",
-                "Scheduled hot water comfort temperature",
-                lambda data: data.plant.dhw_comfort_temperature,
-                coordinator.async_set_scheduled_dhw_comfort_temperature,
-                available_fn=supports_scheduled_dhw_comfort_write,
-            )
+        scheduled_comfort = ElcoTemperatureNumber(
+            coordinator,
+            "dhw_scheduled_comfort_temperature",
+            "Scheduled hot water comfort temperature",
+            lambda data: data.plant.dhw_comfort_temperature,
+            coordinator.async_set_scheduled_dhw_comfort_temperature,
+            available_fn=supports_scheduled_dhw_comfort_write,
         )
+        if not GALEVO_WRITES_ENABLED or scheduled_comfort.has_registry_entry("number"):
+            entities.append(scheduled_comfort)
     if galevo and not GALEVO_WRITES_ENABLED:
         async_add_entities(entities)
         return
-    if coordinator.data.plant.dhw_target_temperature.value is not None:
-        entities.append(
-            ElcoTemperatureNumber(
-                coordinator,
-                "dhw_comfort_temperature",
-                "Domestic hot water comfort temperature",
-                lambda data: data.plant.dhw_target_temperature,
-                lambda value: coordinator.async_set_dhw(comfort=value),
-                enabled_default=False,
+    plant = coordinator.data.plant
+    if plant.dhw_target_temperature.value is not None:
+        dhw_comfort = ElcoTemperatureNumber(
+            coordinator,
+            "dhw_comfort_temperature",
+            "Domestic hot water comfort temperature",
+            lambda data: data.plant.dhw_target_temperature,
+            lambda value: coordinator.async_set_dhw(comfort=value),
+            available_fn=(
+                lambda data: data.plant.galevo_dhw_temperature_write_error(comfort=True) is None
             )
+            if galevo
+            else None,
         )
-    if coordinator.data.plant.dhw_reduced_temperature.value is not None:
+        if dhw_comfort.has_registry_entry("number"):
+            entities.append(dhw_comfort)
+    if plant.dhw_reduced_temperature.value is not None:
         entities.append(
             ElcoTemperatureNumber(
                 coordinator,
@@ -252,59 +296,44 @@ def _create_entities(
                 "Domestic hot water reduced temperature",
                 lambda data: data.plant.dhw_reduced_temperature,
                 lambda value: coordinator.async_set_dhw(reduced=value),
-            )
-        )
-    for zone_number in coordinator.data.zones:
-        zone = coordinator.data.zones[zone_number]
-        if zone.comfort_temperature.value is not None:
-            entities.append(
-                ElcoTemperatureNumber(
-                    coordinator,
-                    f"zone_{zone_number}_comfort_temperature",
-                    f"Zone {zone_number} comfort temperature",
-                    lambda data, zone=zone_number: data.zones[zone].comfort_temperature,
-                    lambda value, zone=zone_number: coordinator.async_set_zone_temperature(
-                        zone, "comfort", value
-                    ),
-                    enabled_default=False,
-                )
-            )
-        if zone.reduced_temperature.value is not None:
-            entities.append(
-                ElcoTemperatureNumber(
-                    coordinator,
-                    f"zone_{zone_number}_reduced_temperature",
-                    f"Zone {zone_number} reduced temperature",
-                    lambda data, zone=zone_number: data.zones[zone].reduced_temperature,
-                    lambda value, zone=zone_number: coordinator.async_set_zone_temperature(
-                        zone, "reduced", value
-                    ),
-                )
-            )
-        if supports_cooling(coordinator.data.discovery.features, zone):
-            if zone.cooling_comfort_temperature.value is not None:
-                entities.append(
-                    ElcoTemperatureNumber(
-                        coordinator,
-                        f"zone_{zone_number}_cooling_comfort_temperature",
-                        f"Zone {zone_number} cooling comfort temperature",
-                        lambda data, zone=zone_number: data.zones[zone].cooling_comfort_temperature,
-                        lambda value, zone=zone_number: coordinator.async_set_zone_temperature(
-                            zone, "cooling_comfort", value
-                        ),
-                        enabled_default=False,
+                available_fn=(
+                    lambda data: (
+                        data.plant.galevo_dhw_temperature_write_error(comfort=False, reduced=True)
+                        is None
                     )
                 )
-            if zone.cooling_reduced_temperature.value is not None:
+                if galevo
+                else None,
+            )
+        )
+    zone_season: ZoneSetpointSeason = "either" if galevo else "active"
+    for zone_number, zone in coordinator.data.zones.items():
+        has_cooling = supports_cooling(coordinator.data.discovery.features, zone)
+        for cooling in (False, True) if has_cooling else (False,):
+            comfort, reduced = zone.temperature_variables(cooling=cooling)
+            legacy_comfort = _zone_temperature_number(
+                coordinator, zone_number, cooling=cooling, season=zone_season
+            )
+            if comfort.value is not None and legacy_comfort.has_registry_entry("number"):
+                entities.append(legacy_comfort)
+            if (
+                galevo
+                and has_cooling
+                and not legacy_comfort.has_registry_entry("number", enabled_only=True)
+            ):
+                off_season = _zone_temperature_number(
+                    coordinator, zone_number, cooling=cooling, season="inactive"
+                )
+                if off_season.has_registry_entry("number") or (
+                    comfort.value is not None
+                    and reduced.value is not None
+                    and not comfort.read_only
+                ):
+                    entities.append(off_season)
+            if reduced.value is not None:
                 entities.append(
-                    ElcoTemperatureNumber(
-                        coordinator,
-                        f"zone_{zone_number}_cooling_reduced_temperature",
-                        f"Zone {zone_number} cooling reduced temperature",
-                        lambda data, zone=zone_number: data.zones[zone].cooling_reduced_temperature,
-                        lambda value, zone=zone_number: coordinator.async_set_zone_temperature(
-                            zone, "cooling_reduced", value
-                        ),
+                    _zone_temperature_number(
+                        coordinator, zone_number, cooling=cooling, reduced=True, season=zone_season
                     )
                 )
 

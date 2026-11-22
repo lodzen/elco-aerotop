@@ -15,6 +15,7 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from .capabilities import supports_native_thermostat
 from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .control_mapping import (
     zone_hvac_mode,
@@ -43,32 +44,41 @@ class ElcoZoneClimate(ElcoAerotopEntity, ClimateEntity):
         self._zone_number = zone_number
         self._attr_name = f"Zone {zone_number} thermostat"
 
-        variable = self._target_variable
-        self._attr_min_temp = variable.minimum if variable.minimum is not None else 5.0
-        self._attr_max_temp = variable.maximum if variable.maximum is not None else 35.0
-        self._attr_target_temperature_step = variable.step or 0.5
-        self._attr_preset_modes = list(zone_presets(self._zone.mode))
-        self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
-        if self._attr_preset_modes:
-            self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
-
     @property
     def _zone(self) -> ZoneState:
         return self.coordinator.data.zones[self._zone_number]
 
     @property
-    def _is_cooling(self) -> bool:
+    def _is_cooling(self) -> bool | None:
         """Return whether ELCO currently has the zone in its cooling season."""
         return self._zone.uses_cooling_setpoints
 
     @property
     def _target_variable(self) -> NumericVariable:
         """Return the comfort setpoint controlled in the active season."""
-        return (
-            self._zone.cooling_comfort_temperature
-            if self._is_cooling
-            else self._zone.comfort_temperature
-        )
+        return self._zone.active_comfort_temperature
+
+    @property
+    def available(self) -> bool:
+        return super().available and supports_native_thermostat(self._zone)
+
+    @property
+    def supported_features(self) -> ClimateEntityFeature:
+        features = ClimateEntityFeature(0)
+        cooling = self._is_cooling
+        if (
+            cooling is not None
+            and not self._target_variable.read_only
+            and self._zone.temperature_write_error(cooling=cooling) is None
+        ):
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE
+        if self.preset_modes:
+            features |= ClimateEntityFeature.PRESET_MODE
+        return features
+
+    @property
+    def preset_modes(self) -> list[str]:
+        return list(zone_presets(self._zone.mode))
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
@@ -132,9 +142,12 @@ class ElcoZoneClimate(ElcoAerotopEntity, ClimateEntity):
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             raise HomeAssistantError("A target temperature is required")
+        cooling = self._is_cooling
+        if cooling is None:
+            raise HomeAssistantError("Remocon did not report the current plant season")
         await self.coordinator.async_set_zone_temperature(
             self._zone_number,
-            "cooling_comfort" if self._is_cooling else "comfort",
+            "cooling_comfort" if cooling else "comfort",
             float(temperature),
         )
 
@@ -174,17 +187,9 @@ def _create_entities(
 ) -> None:
     if not GALEVO_WRITES_ENABLED and coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO:
         return
-    entities = [
-        ElcoZoneClimate(coordinator, zone_number)
-        for zone_number, zone in coordinator.data.zones.items()
-        if (
-            (
-                zone.cooling_comfort_temperature.value
-                if zone.uses_cooling_setpoints
-                else zone.comfort_temperature.value
-            )
-            is not None
-            and zone_hvac_modes(zone.mode, cooling=zone.uses_cooling_setpoints)
-        )
-    ]
+    entities = []
+    for zone_number, zone in coordinator.data.zones.items():
+        thermostat = ElcoZoneClimate(coordinator, zone_number)
+        if supports_native_thermostat(zone) or thermostat.has_registry_entry("climate"):
+            entities.append(thermostat)
     async_add_entities(entities)

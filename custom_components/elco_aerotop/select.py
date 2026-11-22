@@ -11,6 +11,7 @@ from homeassistant.helpers.entity import EntityCategory
 
 from .bsb_controls import HOLIDAY_OPERATING_LEVEL_ADDRESS, HOLIDAY_OPERATING_LEVEL_OPTIONS
 from .const import GALEVO_PLANT_MODE_WRITE_ENABLED, GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
+from .control_mapping import dhw_modes_are_mapped, zone_modes_are_mapped
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
 from .models import bsb_point_value, galevo_item_writable
@@ -33,6 +34,10 @@ class ElcoDhwModeSelect(ElcoAerotopEntity, SelectEntity):
     def options(self) -> list[str]:
         return [option.label for option in self.coordinator.data.plant.dhw_mode.options]
 
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self.options)
+
     async def async_select_option(self, option: str) -> None:
         value = self.coordinator.data.plant.dhw_mode.value_for_label(option)
         await self.coordinator.async_set_dhw(mode=value)
@@ -42,7 +47,6 @@ class ElcoZoneModeSelect(ElcoAerotopEntity, SelectEntity):
     """Control a heating-zone mode."""
 
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, zone_number: int) -> None:
         super().__init__(coordinator, f"zone_{zone_number}_mode")
@@ -58,6 +62,10 @@ class ElcoZoneModeSelect(ElcoAerotopEntity, SelectEntity):
         return [
             option.label for option in self.coordinator.data.zones[self._zone_number].mode.options
         ]
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self.options)
 
     async def async_select_option(self, option: str) -> None:
         zone = self.coordinator.data.zones[self._zone_number]
@@ -256,13 +264,16 @@ def _create_entities(
 ) -> None:
     entities: list[SelectEntity] = []
     galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
-    if (not galevo or GALEVO_WRITES_ENABLED) and coordinator.data.plant.dhw_mode.options:
-        entities.append(ElcoDhwModeSelect(coordinator))
-    entities.extend(
-        ElcoZoneModeSelect(coordinator, zone_number)
-        for zone_number, zone in coordinator.data.zones.items()
-        if (not galevo or GALEVO_WRITES_ENABLED) and zone.mode.options
-    )
+    if not galevo or GALEVO_WRITES_ENABLED:
+        dhw_select = ElcoDhwModeSelect(coordinator)
+        if not dhw_modes_are_mapped(
+            coordinator.data.plant.dhw_mode
+        ) or dhw_select.has_registry_entry("select"):
+            entities.append(dhw_select)
+        for zone_number, zone in coordinator.data.zones.items():
+            zone_select = ElcoZoneModeSelect(coordinator, zone_number)
+            if not zone_modes_are_mapped(zone.mode) or zone_select.has_registry_entry("select"):
+                entities.append(zone_select)
     # Galevo plant-mode select; options follow the controller's PlantMode item.
     # AutomaticThermoregulation is a boolean item and lives in switch.py
     # (control section) rather than as a two-option select.
