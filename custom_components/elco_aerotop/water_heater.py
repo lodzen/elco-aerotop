@@ -66,12 +66,32 @@ class ElcoWaterHeater(ElcoAerotopEntity, WaterHeaterEntity):
         return self.coordinator.data.plant.dhw_target_temperature.value
 
     @property
+    def min_temp(self) -> float:
+        if self._galevo:
+            minimum = self.coordinator.data.plant.dhw_target_temperature.minimum
+            return minimum if minimum is not None else 5.0
+        return super().min_temp
+
+    @property
+    def max_temp(self) -> float:
+        if self._galevo:
+            maximum = self.coordinator.data.plant.dhw_target_temperature.maximum
+            return maximum if maximum is not None else 65.0
+        return super().max_temp
+
+    @property
+    def target_temperature_step(self) -> float | None:
+        if self._galevo:
+            return self.coordinator.data.plant.dhw_target_temperature.step or 0.5
+        return super().target_temperature_step
+
+    @property
     def current_operation(self) -> str | None:
         """Return a stable Home Assistant operation value."""
         return dhw_operation(self.coordinator.data.plant.dhw_mode)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set the DHW comfort target and optional operation atomically."""
+        """Set the DHW comfort target and optional operating mode."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             raise HomeAssistantError("A target temperature is required")

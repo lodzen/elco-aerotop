@@ -388,14 +388,16 @@ def galevo_item_available(item: dict[str, Any]) -> bool:
 
 
 def galevo_item_writable(item: dict[str, Any]) -> bool:
+    value = item.get("value")
     return (
         galevo_item_available(item)
-        and item.get("readOnly", item.get("ro")) is False
-        and _number(item.get("value")) is not None
+        and not item.get("readOnly", False)
+        and not item.get("ro", False)
+        and (isinstance(value, bool) or _number(value) is not None)
     )
 
 
-def _galevo_bool(item: dict[str, Any] | None) -> bool | None:
+def galevo_item_switch_value(item: dict[str, Any] | None) -> bool | None:
     if item is None or not galevo_item_available(item):
         return None
     return _boolean(item.get("value"))
@@ -514,9 +516,34 @@ class PlantState:
     @property
     def dhw_target_temperature(self) -> NumericVariable:
         """Return the target for the active operation."""
-        if self.dhw_mode.value == 3 and self.dhw_always_temperature.value is not None:
+        if self.dhw_mode.value == 3:
             return self.dhw_always_temperature
         return self.dhw_comfort_temperature
+
+    def galevo_dhw_temperature_change(
+        self, comfort: float | None, reduced: float | None
+    ) -> tuple[tuple[float, float | None], tuple[float, float | None]]:
+        """Return checked old and new setpoints for the selected DHW route."""
+        if self.dhw_mode.value == 3 and comfort is not None:
+            if reduced is not None:
+                raise ValueError("Change always-active comfort and scheduled economy separately")
+            always = self.dhw_always_temperature
+            if always.value is None:
+                raise ValueError("Remocon did not return the always-active DHW setpoint")
+            always.validate(comfort)
+            return (always.value, None), (comfort, None)
+
+        old_comfort = self.dhw_comfort_temperature.value
+        old_reduced = self.dhw_reduced_temperature.value
+        if old_comfort is None or old_reduced is None:
+            raise ValueError("Remocon did not return both scheduled DHW setpoints")
+        comfort = old_comfort if comfort is None else comfort
+        reduced = old_reduced if reduced is None else reduced
+        self.dhw_comfort_temperature.validate(comfort)
+        self.dhw_reduced_temperature.validate(reduced)
+        if comfort < reduced:
+            raise ValueError("DHW comfort temperature cannot be below reduced temperature")
+        return (old_comfort, old_reduced), (comfort, reduced)
 
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> PlantState:
@@ -552,8 +579,8 @@ class PlantState:
         return cls(
             raw={"dataItems": items},
             outside_temperature=_galevo_value(_galevo_item(items, "OutsideTemp")),
-            heat_pump_on=_galevo_bool(_galevo_item(items, "IsHeatingPumpOn")),
-            flame_on=_galevo_bool(_galevo_item(items, "IsFlameOn")),
+            heat_pump_on=galevo_item_switch_value(_galevo_item(items, "IsHeatingPumpOn")),
+            flame_on=galevo_item_switch_value(_galevo_item(items, "IsFlameOn")),
             dhw_enabled=None if dhw_mode.value is None else dhw_mode.value != 0,
             dhw_current_temperature=_galevo_value(storage_probe),
             outside_temperature_error=_galevo_error(_galevo_item(items, "OutsideTemp")),
@@ -591,6 +618,14 @@ class ZoneState:
     heating_active: bool | None
     cooling_active: bool | None
     heat_or_cool_request: bool | None
+    cooling_selected: bool | None = None
+
+    @property
+    def uses_cooling_setpoints(self) -> bool:
+        """Select cooling targets without inferring that equipment is running."""
+        if self.cooling_selected is not None:
+            return self.cooling_selected
+        return self.cooling_active is True
 
     @classmethod
     def parse(cls, number: int, raw: dict[str, Any]) -> ZoneState:
@@ -675,6 +710,9 @@ class ZoneState:
         if has_room_sensor is False:
             # Galevo reports 0 °C for zones without a room probe.
             room_temperature = None
+        plant_mode = _galevo_value(_galevo_item(items, "PlantMode"))
+        # PlantMode Cooling (3) and Cooling Only (4) select the cooling targets.
+        cooling_selected = plant_mode in (3, 4) if plant_mode in (0, 1, 2, 3, 4, 5) else None
         return cls(
             number=number,
             raw=raw,
@@ -702,7 +740,10 @@ class ZoneState:
             use_reduced_operation_mode_on_holiday=None,
             heating_active=_boolean(raw.get("heat")),
             cooling_active=_boolean(raw.get("isCoolingActive")),
-            heat_or_cool_request=_galevo_bool(_galevo_item(items, "ZoneHeatRequest", number)),
+            heat_or_cool_request=galevo_item_switch_value(
+                _galevo_item(items, "ZoneHeatRequest", number)
+            ),
+            cooling_selected=cooling_selected,
         )
 
 

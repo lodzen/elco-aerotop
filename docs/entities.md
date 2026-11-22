@@ -12,11 +12,10 @@ integration uses structured Remocon JSON APIs for runtime data; it does not scra
 
 ## Galevo beta
 
-The beta includes Galevo monitoring, a plant-mode select, and a scheduled hot-water
-comfort number when Remocon offers those writable controls. The beta provides native thermostat, water-heater,
-and holiday controls on BSB. Galevo quiet mode, boost, and holiday are monitored through
-read-only entities where available. Existing BSB entity names,
-IDs, registry settings, and typed numeric input boxes are preserved.
+Galevo can expose a native zone thermostat and water heater, plant and zone mode selects,
+temperature and flow numbers, quiet mode, hot-water boost, automatic thermoregulation,
+and a holiday switch with two pending dates. The gateway determines the available entities.
+Existing BSB entity names, IDs, registry settings, and typed numeric input boxes are preserved.
 
 Galevo monitoring includes the plant-mode status, DHW operation and target, the measured
 storage temperature when a probe supplies it, and available holiday, quiet mode, boost,
@@ -103,14 +102,12 @@ Diagnostics.
 | Reduced | heat or cool | eco | Continuous Reduced operation |
 | Protection | heat or cool | Protection | ELCO protection operation |
 
-Protection is not mapped to off because the controller may still request heat to protect the
-installation. Direct operation is exposed as `heat` in the heating season and `cool` only while a
-fresh Remocon snapshot reports `isCoolingActive: true`. Selecting `cool` changes the same verified
-Comfort/Reduced/Protection operating level as Remocon; it does not enable cooling or switch the
-plant between heating and cooling seasons.
+BSB Protection can still request heat. Galevo's separate Off option maps to `off`. BSB uses its
+cooling-active flag to select cooling targets. On Galevo, **Cooling** or **Cooling Only** selects
+cooling targets. The plant-mode select changes the Galevo plant season.
 
-The thermostat target is the stored **heating comfort setpoint**, or the **cooling comfort
-setpoint** while cooling is active. The effective request may differ during Automatic, Reduced,
+The thermostat target is the stored comfort setpoint for the season selected above.
+The effective request may differ during Automatic, Reduced,
 Protection, or holiday operation; the desired-temperature sensor reports that effective request.
 Current temperature comes only from the zone's real room probe. Outdoor, flow, and desired
 temperatures are not substituted because they have different physical meanings. Heating/cooling/
@@ -129,9 +126,10 @@ omitted when its probe is absent or faulty. Turn-on/off services are advertised 
 On and Off are supported. Mapping uses stable numeric codes returned by Remocon, not translated
 labels.
 
-On Galevo beta plants, the target and measured storage temperature are separate read-only
-sensors. The operation and target reflect the scheduled or always-active mode reported by
-the controller.
+On Galevo, **Disabled**, **Time Based**, and **Always active** map to `off`, `heat_pump`,
+and `performance`. The native water heater uses these stable values, and the mode select
+displays the controller's labels. The water-heater target follows the selected operation.
+The storage reading and operation and target sensors are also available separately.
 
 All native writes first refresh only the required current state, validate controller-provided
 limits/options, serialize commands per device, and preserve companion values required by Remocon.
@@ -156,6 +154,9 @@ controller variants. This is the intentional overlap between Controls and Config
 | Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Disabled | Allowed zone choices are returned | Read/write |
 | Plant mode | `select.<device>_plant_mode` | Enabled | Galevo advertises a valid writable `PlantMode` item with options | Mobile `plantData/{gw}/mode` with fresh state and readback |
 | Scheduled hot water comfort temperature | `number.<device>_scheduled_hot_water_comfort_temperature` | Enabled | Galevo is in Time Based mode and returns a writable comfort value with bounds and an economy value | Typed input, verified by reading back both scheduled setpoints |
+| Zone heating and cooling flow temperatures | `number.<device>_zone_<zone>_<season>_flow_temperature` | Enabled | Galevo returns the available flow item and permits writing | Typed input |
+| Zone heating and cooling flow offsets | `number.<device>_zone_<zone>_<season>_flow_offset` | Enabled | Galevo returns the available offset and permits writing | Slider |
+| Quiet mode, hot-water boost, automatic thermoregulation | `switch.<device>_quiet_mode`, `switch.<device>_domestic_hot_water_boost`, `switch.<device>_automatic_thermoregulation` | Enabled | Galevo returns the corresponding writable item | Read/write |
 | Zone 1 holiday operating level | `select.<device>_zone_1_holiday_operating_level` | Enabled | Heating circuit 1 exists; usable when BSB line 648 is returned | Read/write |
 | Heating circuit 714 frost protection setpoint | `number.<device>_heating_circuit_frost_protection_setpoint_714` | Disabled | A zone exists; usable when BSB lines 712 and 714 are returned | Read/write |
 | Heating circuit 720 heating curve slope | `number.<device>_heating_curve_slope_720` | Disabled | A zone exists; usable when BSB line 720 is returned | Read/write |
@@ -163,6 +164,9 @@ controller variants. This is the intentional overlap between Controls and Config
 
 The Galevo plant-mode select uses the choices returned by the controller. Labels come
 from its option text, and the write validates and sends the associated numeric value.
+
+For the Galevo **Holiday** switch and **Pending holiday start/end** date entities, see
+[Holiday periods in Home Assistant](holidays.md#galevo-holiday-controls).
 
 Comfort numbers and mode selects duplicate the native controls, so new registrations keep them
 disabled. Reduced values remain enabled because neither native model has a separate reduced target.

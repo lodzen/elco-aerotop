@@ -59,7 +59,7 @@ class ElcoZoneClimate(ElcoAerotopEntity, ClimateEntity):
     @property
     def _is_cooling(self) -> bool:
         """Return whether ELCO currently has the zone in its cooling season."""
-        return self._zone.cooling_active is True
+        return self._zone.uses_cooling_setpoints
 
     @property
     def _target_variable(self) -> NumericVariable:
@@ -72,7 +72,7 @@ class ElcoZoneClimate(ElcoAerotopEntity, ClimateEntity):
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
-        """Expose cool only when the controller reports cooling as active."""
+        """Expose cool when the controller selects cooling setpoints."""
         return [
             HVACMode(mode) for mode in zone_hvac_modes(self._zone.mode, cooling=self._is_cooling)
         ]
@@ -180,11 +180,11 @@ def _create_entities(
         if (
             (
                 zone.cooling_comfort_temperature.value
-                if zone.cooling_active is True
+                if zone.uses_cooling_setpoints
                 else zone.comfort_temperature.value
             )
             is not None
-            and zone_hvac_modes(zone.mode, cooling=zone.cooling_active is True)
+            and zone_hvac_modes(zone.mode, cooling=zone.uses_cooling_setpoints)
         )
     ]
     async_add_entities(entities)

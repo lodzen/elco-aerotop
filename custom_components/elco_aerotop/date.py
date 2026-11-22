@@ -15,6 +15,7 @@ from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
 from .holiday import current_holiday, has_holiday_source
+from .models import galevo_item_switch_value
 
 
 class ElcoHolidayUntilDate(ElcoAerotopEntity, DateEntity):
@@ -74,7 +75,6 @@ class ElcoGalevoHolidayDate(ElcoAerotopEntity, DateEntity):
             start=value if self._boundary == "start" else None,
             end=value if self._boundary == "end" else None,
         )
-        self.async_write_ha_state()
 
 
 async def async_setup_entry(
@@ -98,7 +98,7 @@ def _create_entities(
     if (
         GALEVO_WRITES_ENABLED
         and coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
-        and coordinator.data.discovery.system_item("Holiday") is not None
+        and galevo_item_switch_value(coordinator.data.discovery.system_item("Holiday")) is not None
     ):
         entities.extend(
             ElcoGalevoHolidayDate(coordinator, boundary) for boundary in ("start", "end")

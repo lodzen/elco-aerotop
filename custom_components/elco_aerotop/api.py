@@ -935,14 +935,17 @@ class ElcoApiClient:
         self._require_galevo_writes()
         if not galevo_item_writable(item):
             raise ValueError("Remocon did not confirm that this data item is writable")
+        old_value = item.get("value")
+        if isinstance(old_value, bool) and value not in (0, 1):
+            raise ValueError("A switch value must be on or off")
         options = item.get("options")
         if isinstance(options, list) and options and value not in options:
             raise ValueError("Value is outside the controller's allowed options")
         NumericVariable.parse(item).validate(value)
         set_item = {
             **item,
-            "value": value,
-            "prevValue": item.get("value"),
+            "value": bool(value) if isinstance(old_value, bool) else value,
+            "prevValue": old_value,
         }
         if "expiresOn" in item:
             set_item["prevExpiresOn"] = item.get("expiresOn")
@@ -965,9 +968,7 @@ class ElcoApiClient:
         cooling: bool,
     ) -> None:
         """Galevo zone temperatures: dedicated route for heating, item set for cooling."""
-        if (cooling and zone.cooling_active is not True) or (
-            not cooling and zone.cooling_active is True
-        ):
+        if cooling != zone.uses_cooling_setpoints:
             raise ValueError("The requested setpoints are outside the active season")
         comfort_variable = zone.cooling_comfort_temperature if cooling else zone.comfort_temperature
         reduced_variable = zone.cooling_reduced_temperature if cooling else zone.reduced_temperature
@@ -1028,27 +1029,15 @@ class ElcoApiClient:
         if comfort is None and reduced is None:
             return
 
-        if plant.dhw_mode.value == 3 and reduced is None:
-            always = plant.dhw_always_temperature
-            if always.value is None or comfort is None:
-                raise ValueError("Remocon did not return the always-active DHW setpoint")
-            always.validate(comfort)
-            if comfort != always.value:
-                await self.async_set_galevo_dhw_temp(comfort, old_temperature=always.value)
+        old, new = plant.galevo_dhw_temperature_change(comfort, reduced)
+        if old == new:
             return
-
-        old_comfort = plant.dhw_comfort_temperature.value
-        old_reduced = plant.dhw_reduced_temperature.value
-        if old_comfort is None or old_reduced is None:
-            raise ValueError("Remocon did not return both scheduled DHW setpoints")
-        comfort = old_comfort if comfort is None else comfort
-        reduced = old_reduced if reduced is None else reduced
-        plant.dhw_comfort_temperature.validate(comfort)
-        plant.dhw_reduced_temperature.validate(reduced)
-        if comfort < reduced:
-            raise ValueError("DHW comfort temperature cannot be below reduced temperature")
-        if comfort == old_comfort and reduced == old_reduced:
+        old_comfort, old_reduced = old
+        comfort, reduced = new
+        if reduced is None:
+            await self.async_set_galevo_dhw_temp(comfort, old_temperature=old_comfort)
             return
+        assert old_reduced is not None
         await self.async_set_galevo_dhw_timeprog_temperatures(
             comfort=comfort, economy=reduced, old_comfort=old_comfort, old_economy=old_reduced
         )

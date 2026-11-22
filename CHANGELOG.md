@@ -2,6 +2,16 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
+## 0.4.0-beta.3
+
+- Enable the Galevo controls from PR #4, including the native thermostat and water heater,
+  holiday dates and switch, quiet mode, hot-water boost, automatic thermoregulation, and
+  supported zone and flow settings.
+- Use the selected Galevo plant mode for heating and cooling targets. Keep the reported
+  activity separate and refresh state promptly after writes.
+- Validate and verify combined hot-water changes in stages, with an explicit error when
+  a mode change succeeds but the requested temperature cannot be confirmed.
+
 ## 0.4.0-beta.2
 
 - Enable the Galevo scheduled hot-water comfort adjustment already verified on hardware.

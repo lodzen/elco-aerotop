@@ -229,7 +229,7 @@ The R2 UI reaches several routes the app never calls (evidence: user-provided HA
 - `GET /api/v2/remote/reports/{gw}/dailyRoomTemp` → `[]`; `co2Report` → HTTP 599 (unsupported).
 - `GET /api/v2/remote/plants/{gw}/consumptionsSettings` → 405 (write path).
   `POST .../getConsumptionsSettings` → `{currency, gasType, gasEnergyUnit, elecCost}`.
-- Galevo write paths (APK proxies — bodies verified from source, requests still gated):
+- Galevo write paths documented from the APK proxies:
   `POST dataItems/{gw}/set`, `zones/{gw}/{n}/{mode,temperatures,deroga,name}`,
   `plantData/{gw}/{mode,dhwTemp,dhwMode,dhwTimeProgTemperatures,holiday}`.
 - `GET /api/v2/remote/reports/{gw}/consSequencesApi8?usages=Ch,Dhw,Cooling&hasSlp=false`
@@ -285,10 +285,11 @@ with `[{id: "U6_9_0", value: 52, prevValue: 53}]` (browser capture).
 Holiday uses the same `ChangeValueDto<LocalDateTime>` shape: `setHoliday(start, end)`
 serializes start as `new` and end as `old` (ISO local date-times, no zone);
 `resetHoliday(now)` sends `old` only. The `Holiday` data item (options [0,1])
-mirrors the controller's holiday flag and backs its read-only beta diagnostic.
-The experimental scheduling implementation keeps explicit draft dates in memory and
-uses Home Assistant's configured time zone for validation. Its writable entities remain
-gated pending verification against the gateway's clock and reported schedule.
+mirrors the controller's holiday flag and backs both its diagnostic and Holiday switch.
+The integration keeps explicit draft dates in memory and uses Home Assistant's configured
+time zone for validation. It checks the returned expiry when available. Without it, a
+transition to active can confirm a holiday starting today. A future schedule with no
+confirming readback is reported as unconfirmed.
 
 `SetDataItemDto` = the full `DataItemDto` as returned by `dataItems/get` plus
 `prevValue` (the previous `value`) and `prevExpiresOn` (the previous `expiresOn`,
@@ -300,12 +301,12 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 `PlantDataProxy.set*` methods (`com.remotethermo.aristonnet.data.remote.proxies`),
 `ChangeValueDto`/`TemperaturesDto`/`SetDataItemsRequest`/`SetDataItemDto` DTOs.
 
-The beta enables two operations with recorded hardware evidence. Plant mode uses the mobile mode
-route. The scheduled hot-water number uses `dhwTimeProgTemperatures` in Time Based mode and
-keeps `new.econ` equal to the fresh `old.econ`. The integration validates the comfort bounds and
-checks both scheduled setpoints on readback. Home Assistant regression tests use mocked
-responses for both operations. The experimental write contracts remain gated. BSB uses its
-existing endpoints.
+Beta.3 enables the Galevo controls implemented in PR #4. The recorded hardware checks
+covered plant mode and scheduled hot-water comfort. The broader controls have Home Assistant
+regression coverage with mocked responses. Commands use a fresh read, gateway-provided limits
+where available, and serialized readback checks. A combined hot-water request verifies the
+mode before changing the temperature and reports a partial result when the second stage fails.
+BSB uses its existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):
 

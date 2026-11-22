@@ -131,9 +131,7 @@ class ElcoBsbNumber(ElcoAerotopEntity, NumberEntity):
 class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
     """One writable Galevo data item exposed as a number.
 
-    Bounds and step follow the item metadata the controller returns; the
-    write goes through ``dataItems/{gw}/set`` and is blocked by
-    ``GALEVO_WRITES_ENABLED`` until the contract is exercised.
+    Bounds and step follow the controller's item metadata.
     """
 
     _attr_mode = NumberMode.BOX
@@ -153,42 +151,38 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
         self._item_id = item_id
         self._zone_number = zone_number
         self._attr_name = name
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         if temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
         else:
             self._attr_mode = NumberMode.SLIDER
-            self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def _item(self) -> dict | None:
         return self.coordinator.data.discovery.system_item(self._item_id, self._zone_number)
 
     @property
     def native_value(self) -> float | None:
-        item = self._item()
-        value = item.get("value") if item else None
-        return float(value) if isinstance(value, int | float) else None
+        return NumericVariable.parse(self._item()).value
 
     @property
     def native_min_value(self) -> float:
-        item = self._item()
-        minimum = item.get("min") if item else None
-        return float(minimum) if isinstance(minimum, int | float) else 0.0
+        minimum = NumericVariable.parse(self._item()).minimum
+        return minimum if minimum is not None else 0.0
 
     @property
     def native_max_value(self) -> float:
-        item = self._item()
-        maximum = item.get("max") if item else None
-        return float(maximum) if isinstance(maximum, int | float) else 100.0
+        maximum = NumericVariable.parse(self._item()).maximum
+        return maximum if maximum is not None else 100.0
 
     @property
     def native_step(self) -> float:
-        item = self._item()
-        step = item.get("step") if item else None
-        return float(step) if isinstance(step, int | float) and step > 0 else 0.5
+        step = NumericVariable.parse(self._item()).step
+        return step if step is not None and step > 0 else 0.5
 
     @property
     def available(self) -> bool:
-        return super().available and self.native_value is not None
+        item = self._item()
+        return super().available and item is not None and galevo_item_writable(item)
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_galevo_data_item(
@@ -239,13 +233,13 @@ def _create_entities(
     if galevo and not GALEVO_WRITES_ENABLED:
         async_add_entities(entities)
         return
-    if coordinator.data.plant.dhw_comfort_temperature.value is not None:
+    if coordinator.data.plant.dhw_target_temperature.value is not None:
         entities.append(
             ElcoTemperatureNumber(
                 coordinator,
                 "dhw_comfort_temperature",
                 "Domestic hot water comfort temperature",
-                lambda data: data.plant.dhw_comfort_temperature,
+                lambda data: data.plant.dhw_target_temperature,
                 lambda value: coordinator.async_set_dhw(comfort=value),
                 enabled_default=False,
             )
@@ -314,9 +308,7 @@ def _create_entities(
                     )
                 )
 
-    # BSB data-point number controls have no Galevo equivalent (and the
-    # Galevo write paths are unverified), so they are only registered on
-    # BSB/unknown families.
+    # BSB data-point controls belong to the BSB family.
     if coordinator.data.zones and coordinator.data.discovery.system_type != SYSTEM_TYPE_GALEVO:
         entities.extend(
             ElcoBsbNumber(coordinator, spec) for spec in BSB_NUMBER_CONTROL_SPECS.values()

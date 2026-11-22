@@ -10,9 +10,20 @@ is the read-only source of truth for periods returned by the controller. Dedicat
 and control entities perform the small set of writes whose payloads and side effects have been
 verified.
 
-This workflow applies to BSB controllers. The Galevo beta exposes its reported
-holiday-active flag. Use the official application to schedule or cancel a Galevo holiday
-while those write contracts are verified.
+## Galevo holiday controls
+
+1. Set **Pending holiday start** and **Pending holiday end** on the device page.
+2. Turn on **Holiday** to send the dates to the gateway.
+3. Turn off **Holiday** to request cancellation.
+
+The date fields are a local draft and reset on reload. The switch reflects the controller's
+reported flag. Readback validates the end date when the gateway returns it. For a holiday
+starting today, the switch can confirm a transition to active without a reported end date.
+Some gateways may give too little information to confirm a future schedule. In that case,
+Home Assistant reports the unconfirmed result and the official application can show the
+schedule. The integration sends local date-times using the Home Assistant configuration.
+
+The remaining sections describe the BSB workflow.
 
 ## Entity model
 

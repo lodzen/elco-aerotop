@@ -48,10 +48,12 @@ from .control_mapping import ZONE_MODE_AUTOMATIC
 from .holiday import current_holiday
 from .models import (
     ElcoData,
+    NumericVariable,
     ReadOnlyDiscovery,
     SelectVariable,
     controller_system_type,
     galevo_item_available,
+    galevo_item_switch_value,
     galevo_item_writable,
 )
 
@@ -923,7 +925,10 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             return
         self._skip_slow_discovery_once = True
         try:
-            await self.async_request_refresh()
+            if self._system_type() == SYSTEM_TYPE_GALEVO:
+                await self.async_refresh()
+            else:
+                await self.async_request_refresh()
         finally:
             self._skip_slow_discovery_once = False
 
@@ -1094,22 +1099,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         if self._system_type() == SYSTEM_TYPE_GALEVO:
             if not GALEVO_WRITES_ENABLED:
                 raise HomeAssistantError("Galevo hot-water writes are disabled in this beta")
-
-            def matches(data: ElcoData) -> bool:
-                plant = data.plant
-                return (
-                    (comfort is None or plant.dhw_target_temperature.value == comfort)
-                    and (reduced is None or plant.dhw_reduced_temperature.value == reduced)
-                    and (mode is None or plant.dhw_mode.value == mode)
-                )
-
-            await self._async_galevo_command(
-                "Domestic hot water change",
-                lambda data: self.api.async_set_galevo_dhw_settings(
-                    data.plant, comfort=comfort, reduced=reduced, mode=mode
-                ),
-                matches,
-            )
+            await self._async_set_galevo_dhw(comfort=comfort, reduced=reduced, mode=mode)
             return
         async with self._command_lock:
             try:
@@ -1151,6 +1141,72 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 raise ConfigEntryAuthFailed from err
             except ElcoApiError as err:
                 raise HomeAssistantError(str(err)) from err
+
+    async def _async_set_galevo_dhw(
+        self, *, comfort: float | None, reduced: float | None, mode: int | None
+    ) -> None:
+        expected: tuple[float, float | None] | None = None
+        changed_mode = False
+
+        async def write(data: ElcoData) -> None:
+            nonlocal expected, changed_mode
+            plant = data.plant
+            if comfort is not None or reduced is not None:
+                if mode is not None and mode != plant.dhw_mode.value:
+                    # Reject invalid targets before changing the operating mode.
+                    replace(
+                        plant, dhw_mode=replace(plant.dhw_mode, value=mode)
+                    ).galevo_dhw_temperature_change(comfort, reduced)
+                    observed: ElcoData | None = None
+
+                    async def read_mode() -> ElcoData:
+                        nonlocal observed
+                        observed = await self._async_fresh_data()
+                        return observed
+
+                    failure = await self._async_write_with_reconciliation(
+                        write=lambda: self.api.async_set_galevo_dhw_settings(
+                            plant, comfort=None, reduced=None, mode=mode
+                        ),
+                        reconcile=read_mode,
+                        matches=lambda state: state.plant.dhw_mode.value == mode,
+                        description="Domestic hot water mode change",
+                        verify_success=True,
+                    )
+                    if failure is not None:
+                        raise failure
+                    assert observed is not None
+                    plant = observed.plant
+                    changed_mode = True
+                _, expected = plant.galevo_dhw_temperature_change(comfort, reduced)
+
+            await self.api.async_set_galevo_dhw_settings(
+                plant, comfort=comfort, reduced=reduced, mode=mode
+            )
+
+        def matches(data: ElcoData) -> bool:
+            plant = data.plant
+            if mode is not None and plant.dhw_mode.value != mode:
+                return False
+            if expected is None:
+                return True
+            if expected[1] is None:
+                return plant.dhw_always_temperature.value == expected[0]
+            return (
+                plant.dhw_comfort_temperature.value,
+                plant.dhw_reduced_temperature.value,
+            ) == expected
+
+        try:
+            await self._async_galevo_command("Domestic hot water change", write, matches)
+        except HomeAssistantError as err:
+            if changed_mode:
+                await self._async_refresh_after_write()
+                raise HomeAssistantError(
+                    f"Hot-water mode changed, but the temperature change failed or was "
+                    f"unconfirmed: {err}"
+                ) from err
+            raise
 
     async def _async_galevo_command(
         self,
@@ -1245,6 +1301,8 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             self._pending_holiday_start = start
         if end is not None:
             self._pending_holiday_end = end
+        if self.data is not None:
+            self.async_update_listeners()
 
     @property
     def pending_holiday_start(self) -> date | None:
@@ -1258,24 +1316,44 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         return datetime.now(ZoneInfo(self.hass.config.time_zone))
 
     async def async_set_galevo_holiday(self) -> None:
-        """Activate a local draft when holiday writes have been verified."""
+        """Send a local holiday draft and confirm the controller's reported state."""
         if not GALEVO_WRITES_ENABLED:
             raise HomeAssistantError("Galevo holiday writes are disabled in this beta")
         start, end = self.pending_holiday_start, self.pending_holiday_end
         if start is None or end is None:
             raise HomeAssistantError("Set both holiday draft dates before activating")
-        if end < start or start < self._local_now().date():
+        today = self._local_now().date()
+        if end < start or start < today:
             raise HomeAssistantError("Select an ordered holiday window starting today or later")
         start_iso = f"{start.isoformat()}T00:00:00"
         end_iso = f"{end.isoformat()}T23:59:59"
+        previously_active: bool | None = None
+
+        async def write(data: ElcoData) -> None:
+            nonlocal previously_active
+            previously_active = galevo_item_switch_value(data.discovery.system_item("Holiday"))
+            if previously_active is None:
+                raise ValueError("Remocon did not report the current holiday state")
+            await self.api.async_set_galevo_holiday(start=start_iso, end=end_iso)
 
         def matches(data: ElcoData) -> bool:
             item = data.discovery.system_item("Holiday")
-            return bool(item and item.get("value") == 1 and item.get("expiresOn") == end_iso)
+            if item is None or galevo_item_switch_value(item) is not True:
+                return False
+            expiry = item.get("expiresOn")
+            if isinstance(expiry, str):
+                try:
+                    reported_end = datetime.fromisoformat(expiry)
+                except ValueError:
+                    return False
+                if reported_end.tzinfo is not None:
+                    reported_end = reported_end.astimezone(self._local_now().tzinfo)
+                return reported_end.date() == end
+            return previously_active is False and start == today
 
         await self._async_galevo_command(
             "Holiday activation",
-            lambda _: self.api.async_set_galevo_holiday(start=start_iso, end=end_iso),
+            write,
             matches,
         )
 
@@ -1288,7 +1366,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             lambda _: self.api.async_reset_galevo_holiday(
                 now=self._local_now().replace(tzinfo=None, microsecond=0).isoformat(),
             ),
-            lambda data: data.discovery.system_value("Holiday") == 0,
+            lambda data: galevo_item_switch_value(data.discovery.system_item("Holiday")) is False,
         )
 
     async def async_set_galevo_data_item(self, item_key: str, value: float) -> None:
@@ -1296,21 +1374,22 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         if not GALEVO_WRITES_ENABLED:
             raise HomeAssistantError("Galevo data-item writes are disabled in this beta")
 
+        def matches(data: ElcoData) -> bool:
+            item = data.discovery.system_items.get(item_key)
+            return bool(
+                item
+                and galevo_item_available(item)
+                and (item.get("value") == value or NumericVariable.parse(item).value == value)
+            )
+
         async def write(data: ElcoData) -> None:
             item = data.discovery.system_items.get(item_key)
-            if item is None:
-                raise ValueError("Remocon did not return this data item")
-            await self.api.async_set_galevo_data_item(item, value)
+            if item is None or not galevo_item_writable(item):
+                raise ValueError("Remocon did not return a writable data item")
+            if not matches(data):
+                await self.api.async_set_galevo_data_item(item, value)
 
-        await self._async_galevo_command(
-            "Data item change",
-            write,
-            lambda data: (
-                (item := data.discovery.system_items.get(item_key)) is not None
-                and galevo_item_available(item)
-                and item.get("value") == value
-            ),
-        )
+        await self._async_galevo_command("Data item change", write, matches)
 
     async def async_set_zone_mode(self, zone_number: int, mode: int) -> None:
         """Safely update a heating-zone operating mode."""

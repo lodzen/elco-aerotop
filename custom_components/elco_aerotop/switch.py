@@ -11,15 +11,11 @@ from homeassistant.core import HomeAssistant
 from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import galevo_item_writable
+from .models import galevo_item_switch_value, galevo_item_writable
 
 
 class ElcoGalevoItemSwitch(ElcoAerotopEntity, SwitchEntity):
-    """Toggle one writable Galevo boolean data item (``dataItems/{gw}/set``).
-
-    The write stays blocked by ``GALEVO_WRITES_ENABLED`` inside the API
-    client — toggling raises until the flag is enabled deliberately.
-    """
+    """Toggle one writable Galevo boolean data item."""
 
     def __init__(
         self,
@@ -41,11 +37,14 @@ class ElcoGalevoItemSwitch(ElcoAerotopEntity, SwitchEntity):
     @property
     @override
     def is_on(self) -> bool | None:
+        return galevo_item_switch_value(self._item())
+
+    @property
+    def available(self) -> bool:
         item = self._item()
-        value = item.get("value") if item else None
-        if not isinstance(value, int | float):
-            return None
-        return bool(value)
+        return super().available and bool(
+            item and galevo_item_writable(item) and self.is_on is not None
+        )
 
     async def _async_write(self, enabled: bool) -> None:
         await self.coordinator.async_set_galevo_data_item(
@@ -69,7 +68,7 @@ class ElcoGalevoHolidaySwitch(ElcoAerotopEntity, SwitchEntity):
     Turning on sends ``plantData/{gw}/holiday`` with the dates held by
     the ``holiday_start``/``holiday_end`` date entities (APK contract:
     ``ChangeValueDto<LocalDateTime>`` new=start, old=end); turning off
-    sends the reset body. Writes stay gated by ``GALEVO_WRITES_ENABLED``.
+    sends the reset body.
     """
 
     _attr_name = "Holiday"
@@ -81,11 +80,11 @@ class ElcoGalevoHolidaySwitch(ElcoAerotopEntity, SwitchEntity):
     @property
     @override
     def is_on(self) -> bool | None:
-        item = self.coordinator.data.discovery.system_item("Holiday")
-        value = item.get("value") if item else None
-        if not isinstance(value, int | float):
-            return None
-        return bool(value)
+        return galevo_item_switch_value(self.coordinator.data.discovery.system_item("Holiday"))
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.is_on is not None
 
     @property
     @override
@@ -130,8 +129,12 @@ def _create_entities(
         ("AutomaticThermoregulation", "automatic_thermoregulation", "Automatic thermoregulation"),
     ):
         item = coordinator.data.discovery.system_item(item_id)
-        if item is not None and galevo_item_writable(item):
+        if (
+            item is not None
+            and galevo_item_writable(item)
+            and galevo_item_switch_value(item) is not None
+        ):
             entities.append(ElcoGalevoItemSwitch(coordinator, item_id, key, name))
-    if coordinator.data.discovery.system_item("Holiday") is not None:
+    if galevo_item_switch_value(coordinator.data.discovery.system_item("Holiday")) is not None:
         entities.append(ElcoGalevoHolidaySwitch(coordinator))
     async_add_entities(entities)

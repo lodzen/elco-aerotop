@@ -82,8 +82,8 @@ GALEVO_HOLIDAY_PATH: Final = "/api/v2/remote/plantData/{gateway_id}/holiday"
 GALEVO_CONS_SEQUENCES_PATH: Final = (
     "/api/v2/remote/reports/{gateway_id}/consSequencesApi8?usages=Ch,Dhw,Cooling&hasSlp=false"
 )
-# The beta enables the hardware-verified operations individually.
-GALEVO_WRITES_ENABLED: Final = False
+# Enable the full Galevo control set from PR #4 in the beta.
+GALEVO_WRITES_ENABLED: Final = True
 GALEVO_PLANT_MODE_WRITE_ENABLED: Final = True
 GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED: Final = True
 GALEVO_SYSTEM_STATE_PATH: Final = "/api/v2/remote/plantData/{gateway_id}/systemState"

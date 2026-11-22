@@ -129,7 +129,8 @@ async def test_dhw_mode_can_change_without_temperature_and_combined_changes_are_
     assert session.calls[-1][2]["json"] == {"new": 0, "old": 2}
 
 
-async def test_beta_dhw_write_allows_comfort_only_with_unchanged_economy():
+async def test_individual_comfort_gate_still_allows_only_unchanged_economy(monkeypatch):
+    monkeypatch.setattr(api_module, "GALEVO_WRITES_ENABLED", False)
     client, session = _client(FakeResponse(json_data={"success": True}))
     with pytest.raises(ValueError, match="disabled"):
         await client.async_set_galevo_dhw_timeprog_temperatures(
@@ -144,6 +145,49 @@ async def test_beta_dhw_write_allows_comfort_only_with_unchanged_economy():
     assert options["json"] == {
         "new": {"comf": 52, "econ": 40},
         "old": {"comf": 53, "econ": 40},
+    }
+
+
+async def test_writable_boolean_data_item_keeps_the_gateway_wire_type():
+    client, session = _client(FakeResponse(json_data={"success": True}))
+    item = {"id": "IsQuite", "zone": 0, "value": False}
+    await client.async_set_galevo_data_item(item, 1.0)
+    _, _, options = session.calls[-1]
+    sent = options["json"]["items"][0]
+    assert sent["value"] is True
+    assert sent["prevValue"] is False
+
+
+async def test_galevo_cooling_setpoint_writes_only_the_changed_item():
+    client, session = _client(FakeResponse(json_data={"success": True}))
+    items = {
+        "PlantMode:0": {"value": 3},
+        "ZoneComfortCoolingTemp:1": {
+            "id": "ZoneComfortCoolingTemp",
+            "zone": 1,
+            "value": 22,
+            "min": 17,
+            "max": 27,
+        },
+        "ZoneEconomyCoolingTemp:1": {
+            "id": "ZoneEconomyCoolingTemp",
+            "zone": 1,
+            "value": 27,
+            "min": 22,
+            "max": 30,
+        },
+    }
+    client.last_system_items = items
+    zone = ZoneState.from_galevo(1, {}, items)
+    assert zone.uses_cooling_setpoints and zone.cooling_active is None
+    await client.async_set_zone_temperatures(zone, comfort=23, reduced=27, cooling=True)
+    _, url, options = session.calls[-1]
+    assert url.endswith("/dataItems/SYNTHETIC_GW/set")
+    assert len(options["json"]["items"]) == 1
+    assert options["json"]["items"][0] == {
+        **items["ZoneComfortCoolingTemp:1"],
+        "value": 23,
+        "prevValue": 22,
     }
 
 
