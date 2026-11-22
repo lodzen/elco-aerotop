@@ -10,10 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
 from .bsb_controls import HOLIDAY_OPERATING_LEVEL_ADDRESS, HOLIDAY_OPERATING_LEVEL_OPTIONS
-from .const import SYSTEM_TYPE_GALEVO
+from .const import GALEVO_PLANT_MODE_WRITE_ENABLED, GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import bsb_point_value
+from .models import bsb_point_value, galevo_item_writable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,13 +92,7 @@ def _plant_mode_options(data) -> list[tuple[int, str]]:
 
 
 class ElcoPlantModeSelect(ElcoAerotopEntity, SelectEntity):
-    """Galevo plant mode (e.g. Summer/Winter/Heating only/Cooling/OFF).
-
-    Options follow the controller's PlantMode data item. The write path
-    (``POST plantData/{gw}/mode``, APK-verified ``ChangeValueDto``) stays
-    disabled via ``GALEVO_WRITES_ENABLED`` until it is exercised
-    deliberately — selecting an option raises until then.
-    """
+    """Galevo plant mode with fresh validation and readback."""
 
     _attr_name = "Plant mode"
 
@@ -122,6 +116,11 @@ class ElcoPlantModeSelect(ElcoAerotopEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         return [label for _, label in _plant_mode_options(self.coordinator.data)]
+
+    @property
+    def available(self) -> bool:
+        item = self.coordinator.data.discovery.system_item("PlantMode")
+        return super().available and bool(item and galevo_item_writable(item) and self.options)
 
     async def async_select_option(self, option: str) -> None:
         value = next(
@@ -256,22 +255,27 @@ def _create_entities(
     async_add_entities,
 ) -> None:
     entities: list[SelectEntity] = []
-    if coordinator.data.plant.dhw_mode.options:
+    galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
+    if (not galevo or GALEVO_WRITES_ENABLED) and coordinator.data.plant.dhw_mode.options:
         entities.append(ElcoDhwModeSelect(coordinator))
     entities.extend(
         ElcoZoneModeSelect(coordinator, zone_number)
         for zone_number, zone in coordinator.data.zones.items()
-        if zone.mode.options
+        if (not galevo or GALEVO_WRITES_ENABLED) and zone.mode.options
     )
     # Galevo plant-mode select; options follow the controller's PlantMode item.
     # AutomaticThermoregulation is a boolean item and lives in switch.py
     # (control section) rather than as a two-option select.
+    item = coordinator.data.discovery.system_item("PlantMode")
     if (
-        coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
-        and coordinator.data.discovery.system_item("PlantMode") is not None
+        galevo
+        and GALEVO_PLANT_MODE_WRITE_ENABLED
+        and item
+        and galevo_item_writable(item)
+        and _plant_mode_options(coordinator.data)
     ):
         entities.append(ElcoPlantModeSelect(coordinator))
     # Holiday operating level is a BSB data point; no Galevo equivalent.
-    if 1 in coordinator.data.zones and coordinator.data.discovery.system_type != SYSTEM_TYPE_GALEVO:
+    if 1 in coordinator.data.zones and not galevo:
         entities.append(ElcoHolidayOperatingLevelSelect(coordinator))
     async_add_entities(entities)

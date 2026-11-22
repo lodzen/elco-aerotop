@@ -10,6 +10,19 @@ Entity creation is capability-driven. Two installations can legitimately have di
 counts because controllers, connected probes, firmware, and advertised Remocon features vary. The
 integration uses structured Remocon JSON APIs for runtime data; it does not scrape web pages.
 
+## Galevo beta
+
+The beta includes read-only Galevo monitoring and a plant-mode select when Remocon returns
+a writable mode with valid options. The beta provides native thermostat, water-heater,
+and holiday controls on BSB. Galevo quiet mode, boost, and holiday are monitored through
+read-only entities where available. Existing BSB entity names,
+IDs, registry settings, and typed numeric input boxes are preserved.
+
+Galevo monitoring includes the plant-mode status, DHW operation and target, the measured
+storage temperature when a probe supplies it, and available holiday, quiet mode, boost,
+and thermoregulation flags. The DHW operation sensor uses stable values such as `off`,
+`heat_pump`, and `performance`. A setting can appear on a later successful poll.
+
 ## Reading the tables
 
 - `<device>` is Home Assistant's generated slug for ELCO Aerotop plus the gateway ID.
@@ -67,7 +80,6 @@ numbers, addresses, or other personal data.
 | Metadata, faults, maintenance, and health | Diagnostics | Enabled | Important device and problem information kept out of normal sensors |
 | Duplicate activity states and internal gas/source/hot-gas values | Diagnostics | Disabled | Native-control overlap or specialist troubleshooting |
 | Low-level BSB 700–730 and cooling 8786/8787 values | Diagnostics | Disabled | Controller-level troubleshooting |
-| `<usage>` energy last 24 hours / 7 days / 12 months / month | `sensor.<device>_energy_<usage>_<period>` | Enabled | Galevo `consSequencesApi8` returns the series (`usage` = heating/dhw/cooling) | Read-only |
 | All 80 energy-history entities | Diagnostics | Disabled | Fixed historical records, not increasing Energy Dashboard counters |
 
 Entity category and entity domain answer different questions. The writable holiday operating
@@ -117,10 +129,9 @@ omitted when its probe is absent or faulty. Turn-on/off services are advertised 
 On and Off are supported. Mapping uses stable numeric codes returned by Remocon, not translated
 labels.
 
-On **Galevo** plants the water heater exposes the gateway's own `DhwMode` option texts as
-operations instead of the canonical HA names (e.g. `Disabled`, `Time Based`, `Always active`).
-Writing a label maps back to the raw `eDhwMode` value; turn-on prefers the scheduled mode
-(`Time Based`) and turn-off selects `Disabled`.
+On Galevo beta plants, the target and measured storage temperature are separate read-only
+sensors. The operation and target reflect the scheduled or always-active mode reported by
+the controller.
 
 All native writes first refresh only the required current state, validate controller-provided
 limits/options, serialize commands per device, and preserve companion values required by Remocon.
@@ -143,27 +154,14 @@ controller variants. This is the intentional overlap between Controls and Config
 | Zone `<zone>` cooling reduced temperature | `number.<device>_zone_<zone>_cooling_reduced_temperature` | Enabled | Cooling capability and a reduced value are returned | Read/write while cooling is active |
 | DHW mode | `select.<device>_domestic_hot_water_mode` | Disabled | Allowed DHW choices are returned | Read/write |
 | Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Disabled | Allowed zone choices are returned | Read/write |
-| Plant mode | `select.<device>_plant_mode` | Enabled (Controls) | Galevo gateway returns a writable `PlantMode` data item | Write via `R2/PlantHome/SetData` (the mobile `plantData/{gw}/mode` route acknowledges but is a no-op on this gateway) |
-| Quiet mode | `switch.<device>_quiet_mode` | Enabled (Controls) | Galevo returns a writable `IsQuite` item | Read/write via `dataItems/{gw}/set` |
-| Domestic hot water boost | `switch.<device>_domestic_hot_water_boost` | Enabled (Controls) | Galevo returns a writable `IsDhwBoost` item | Read/write via `dataItems/{gw}/set` |
-| Automatic thermoregulation | `switch.<device>_automatic_thermoregulation` | Enabled (Controls) | Galevo returns a writable `AutomaticThermoregulation` item | Read/write via `dataItems/{gw}/set` |
-| Holiday | `switch.<device>_holiday` | Enabled | Galevo returns the `Holiday` item | Sends the pending start/end window via `plantData/{gw}/holiday` |
-| Holiday start / end | `date.<device>_holiday_start` / `date.<device>_holiday_end` | Enabled | Same as above | Local pending window only — nothing is sent until the switch turns on |
-
-| Zone `<zone>` heating flow temperature | `number.<device>_zone_<zone>_heating_flow_temperature` | Enabled | Galevo returns writable `HeatingFlowTemp` | Read/write via `dataItems/{gw}/set` |
-| Zone `<zone>` heating flow offset | `number.<device>_zone_<zone>_heating_flow_offset` | Enabled | Galevo returns writable `HeatingFlowOffset` | Read/write via `dataItems/{gw}/set` |
-| Zone `<zone>` cooling flow temperature | `number.<device>_zone_<zone>_cooling_flow_temperature` | Enabled | Galevo returns writable `CoolingFlowTemp` | Read/write via `dataItems/{gw}/set` |
-| Zone `<zone>` cooling flow offset | `number.<device>_zone_<zone>_cooling_flow_offset` | Enabled | Galevo returns writable `CoolingFlowOffset` | Read/write via `dataItems/{gw}/set` |
+| Plant mode | `select.<device>_plant_mode` | Enabled | Galevo advertises a valid writable `PlantMode` item with options | Mobile `plantData/{gw}/mode` with fresh state and readback |
 | Zone 1 holiday operating level | `select.<device>_zone_1_holiday_operating_level` | Enabled | Heating circuit 1 exists; usable when BSB line 648 is returned | Read/write |
 | Heating circuit 714 frost protection setpoint | `number.<device>_heating_circuit_frost_protection_setpoint_714` | Disabled | A zone exists; usable when BSB lines 712 and 714 are returned | Read/write |
 | Heating circuit 720 heating curve slope | `number.<device>_heating_curve_slope_720` | Disabled | A zone exists; usable when BSB line 720 is returned | Read/write |
 | Heating circuit 730 summer/winter heating limit | `number.<device>_summer_winter_heating_limit_730` | Disabled | A zone exists; usable when BSB line 730 is returned | Read/write |
 
-Select option lists are never hardcoded: `DhwMode`, `ZoneMode`, and `PlantMode` enumerate
-exactly the choices the controller returns in each data item's `options` list, labelled
-positionally by its `optTexts`. A Galevo zone that reports `options: [2, 3]` therefore
-offers only Manual and Time program; plant-level choices such as Cooling or OFF live on the
-`PlantMode` item instead of the zone thermostat.
+The Galevo plant-mode select uses the choices returned by the controller. Labels come
+from its option text, and the write validates and sends the associated numeric value.
 
 Comfort numbers and mode selects duplicate the native controls, so new registrations keep them
 disabled. Reduced values remain enabled because neither native model has a separate reduced target.
@@ -356,11 +354,13 @@ are registered **disabled by default**, including slot 1. Every display name sta
 `Annual energy record <slot> –` so Home Assistant sorts the eight children of each record together.
 This applies consistently to all ten records, not only to the first or latest record.
 
-**Galevo exception:** on Galevo gateways the three `energy_input` fields of record 1 are backed by
-the `consSequencesApi8` consumption series (rolling last 12 completed monthly buckets — the
-`Prod*` usages that would feed `heat_delivered_*` are rejected by the gateway, live probe
-2026-11-19) and register enabled by default. The remaining fields/slots stay BSB-only and
-unavailable on Galevo.
+### Galevo consumption reports
+
+Galevo publishes separate `sensor.<device>_energy_<usage>_<period>` readings for heating,
+hot water, and cooling when the service returns that series. The periods are the last
+24 hours, last 7 days, last complete month, and last 12 complete months. Missing buckets
+leave the affected period unavailable. These are rolling measurements in kWh. They have
+their own IDs and are separate from the fixed BSB annual records below.
 
 | Per-slot entity | Typical entity ID | Unit | Meaning |
 |---|---|---:|---|

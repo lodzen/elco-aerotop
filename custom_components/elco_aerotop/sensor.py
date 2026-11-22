@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, date, datetime, tzinfo
+from math import isfinite
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -15,6 +16,7 @@ from homeassistant.util import dt as dt_util
 
 from .capabilities import supports_cooling, supports_room_sensor
 from .const import BSB_ENERGY_HISTORY_ADDRESSES, BSB_ENTITY_ADDRESSES, SYSTEM_TYPE_GALEVO
+from .control_mapping import dhw_operation
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
 from .models import (
@@ -44,6 +46,7 @@ class ElcoSensor(ElcoAerotopEntity, SensorEntity):
         entity_category: EntityCategory | None = None,
         measurement: bool = False,
         energy: bool = False,
+        energy_total: bool = True,
         date_sensor: bool = False,
         timestamp_sensor: bool = False,
         available_fn: Callable[[ElcoData], bool] | None = None,
@@ -73,7 +76,8 @@ class ElcoSensor(ElcoAerotopEntity, SensorEntity):
         if energy:
             self._attr_device_class = SensorDeviceClass.ENERGY
             self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-            self._attr_state_class = SensorStateClass.TOTAL
+            if energy_total:
+                self._attr_state_class = SensorStateClass.TOTAL
         elif date_sensor:
             self._attr_device_class = SensorDeviceClass.DATE
         elif timestamp_sensor:
@@ -196,17 +200,22 @@ def _galevo_weather_label(data: ElcoData) -> str | float | None:
     return _GALEVO_WEATHER_LABELS.get(int(value), value)
 
 
-def _energy_sequence(data: ElcoData, kind: int, period: int) -> list[float]:
+def _energy_sequence(data: ElcoData, kind: int, period: int) -> list[float | None]:
     """Return one consumption series' kWh buckets (oldest first)."""
     for sequence in data.discovery.energy_sequences:
         if sequence.get("k") == kind and sequence.get("p") == period:
             values = sequence.get("v")
             if isinstance(values, list):
-                return [float(v) for v in values if isinstance(v, int | float)]
+                return [
+                    float(v)
+                    if isinstance(v, int | float) and not isinstance(v, bool) and isfinite(v)
+                    else None
+                    for v in values
+                ]
     return []
 
 
-def _last_complete_bucket(values: list[float]) -> float | None:
+def _last_complete_bucket(values: list[float | None]) -> float | None:
     """Return the last completed month; the final bucket is still in progress.
 
     Bucket order (oldest first) and the running last bucket are inferred
@@ -216,20 +225,20 @@ def _last_complete_bucket(values: list[float]) -> float | None:
     return values[-2] if len(values) >= 2 else None
 
 
-def _annual_energy_value(data: ElcoData, kind: int) -> float | None:
-    """Sum the last 12 complete monthly buckets of a consumption series.
-
-    Galevo counterpart of the BSB ``annual energy input`` record fields:
-    ``consSequencesApi8`` period 4 returns monthly kWh buckets (oldest
-    first, last still running), so the rolling last 12 completed months
-    approximate the BSB yearly record. The ``Prod*`` usages needed for the
-    ``heat_delivered_*`` fields are rejected by the gateway (HTTP 500,
-    live probe 2026-11-19), so only the input side is matchable.
-    """
-    values = _energy_sequence(data, kind, 4)
-    if len(values) < 13:
+def _energy_sum(values: list[float | None], bucket_count: int) -> float | None:
+    present = [value for value in values if value is not None]
+    if len(values) != bucket_count or len(present) != bucket_count:
         return None
-    return sum(values[-13:-1])
+    return sum(present)
+
+
+def _energy_value(data: ElcoData, kind: int, period: int, window: str) -> float | None:
+    values = _energy_sequence(data, kind, period)
+    if window == "last_month":
+        return _last_complete_bucket(values)
+    if window == "last_12_complete_months":
+        return _energy_sum(values[-13:-1], 12)
+    return _energy_sum(values, 24 if period == 1 else 7)
 
 
 def _menu_item_value(data: ElcoData, item_id: str) -> float | None:
@@ -506,7 +515,9 @@ def _create_entities(
         ),
     )
     for item_id, key, name, is_pressure in system_sensor_specs:
-        if _has_system_item(data, item_id):
+        if _has_system_item(data, item_id) or (
+            bsb_family and item_id in {"ChFlowTemp", "ChFlowSetpointTemp"}
+        ):
             entities.append(
                 ElcoSensor(
                     coordinator,
@@ -611,80 +622,42 @@ def _create_entities(
             )
         )
 
-    # Galevo consumption series (reports/consSequencesApi8) arrive via
-    # deferred discovery; registration follows the probe status, values the
-    # sequence list.
-    if data.discovery.probe_status.get("energy_sequences") not in (
-        "unsupported:bsb_system",
-        "unsupported:system_family",
-    ):
+    if not bsb_family:
         for kind, slug, name in (
             (1, "heating", "Heating"),
             (2, "dhw", "Domestic hot water"),
             (3, "cooling", "Cooling"),
         ):
-            entities.extend(
-                ElcoSensor(
-                    coordinator,
-                    f"energy_{slug}_{suffix}",
-                    f"{name} energy {label}",
-                    lambda state, kind=kind, period=period, select=select: select(
-                        _energy_sequence(state, kind, period)
-                    ),
-                    energy=True,
-                    available_fn=lambda state, kind=kind, period=period: bool(
-                        _energy_sequence(state, kind, period)
-                    ),
+            for window, label, period in (
+                ("last_24_hours", "last 24 hours", 1),
+                ("last_7_days", "last 7 days", 2),
+                ("last_month", "last complete month", 4),
+                ("last_12_complete_months", "last 12 complete months", 4),
+            ):
+                if not _energy_sequence(data, kind, period):
+                    continue
+                entities.append(
+                    ElcoSensor(
+                        coordinator,
+                        f"energy_{slug}_{window}",
+                        f"{name} energy {label}",
+                        lambda state, kind=kind, period=period, window=window: _energy_value(
+                            state, kind, period, window
+                        ),
+                        energy=True,
+                        energy_total=False,
+                        available_fn=lambda state, kind=kind, period=period, window=window: (
+                            _energy_value(state, kind, period, window) is not None
+                        ),
+                    )
                 )
-                for suffix, label, period, select in (
-                    ("last_24_hours", "last 24 hours", 1, lambda v: sum(v)),
-                    ("last_7_days", "last 7 days", 2, lambda v: sum(v)),
-                    ("last_month", "last month", 4, _last_complete_bucket),
-                )
-            )
 
-        # Reuse the BSB-shaped annual energy-input entities for Galevo:
-        # the consumption series provide the same "energy brought in"
-        # semantics. Entity keys match the existing registry unique_ids so
-        # pre-Galevo entries come back to life instead of duplicating.
-        for key, name, kind in (
-            (
-                "annual_energy_input_heating_1",
-                "Annual energy record 1 – Energy brought in heating",
-                1,
-            ),
-            (
-                "annual_energy_input_dhw_1",
-                "Annual energy record 1 – Energy brought in DHW",
-                2,
-            ),
-            (
-                "annual_energy_input_cooling_1",
-                "Annual energy record 1 – Energy brought in cooling",
-                3,
-            ),
-        ):
-            entities.append(
-                ElcoSensor(
-                    coordinator,
-                    key,
-                    name,
-                    lambda state, usage=kind: _annual_energy_value(state, usage),
-                    energy=True,
-                    entity_category=EntityCategory.DIAGNOSTIC,
-                    available_fn=lambda state, usage=kind: (
-                        _annual_energy_value(state, usage) is not None
-                    ),
-                )
-            )
-
-    # Galevo menu items arrive via deferred discovery; keep the entities
-    # registered and let item presence drive their availability.
-    if data.discovery.probe_status.get("menu_items") != "unsupported:bsb_system":
         for item_id, key, name, is_temperature, enabled_default in (
             ("119", "gateway_signal_level", "Gateway signal level", False, True),
             ("130", "online_outdoor_temperature", "On-line outdoor temperature", True, False),
         ):
+            if _menu_item_value(data, item_id) is None:
+                continue
             entities.append(
                 ElcoSensor(
                     coordinator,
@@ -698,6 +671,35 @@ def _create_entities(
                         _menu_item_value(state, source) is not None
                     ),
                     enabled_default=enabled_default,
+                )
+            )
+
+        if _has_system_item(data, "PlantMode"):
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    "plant_mode_status",
+                    "Plant mode status",
+                    lambda state: _system_item_label(state, "PlantMode"),
+                )
+            )
+        if data.plant.dhw_mode.value is not None:
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    "dhw_operation",
+                    "Domestic hot water operation",
+                    lambda state: dhw_operation(state.plant.dhw_mode),
+                )
+            )
+        if data.plant.dhw_target_temperature.value is not None:
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    "dhw_target_temperature",
+                    "Domestic hot water target temperature",
+                    lambda state: state.plant.dhw_target_temperature.value,
+                    temperature=True,
                 )
             )
 

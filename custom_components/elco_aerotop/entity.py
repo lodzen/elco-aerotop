@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 
 
@@ -26,30 +27,27 @@ def async_setup_platform_entities(
     helper, which defers entity creation until ``coordinator.data`` exists.
     """
     coordinator: ElcoDataUpdateCoordinator = entry.runtime_data
-    if coordinator.data is not None:
-        create_entities(coordinator, async_add_entities)
-        return
-
-    listener_removed = False
+    registered: set[str] = set()
 
     @callback
-    def _remove_listener() -> None:
-        # coordinator listeners pop() by id — a second call raises KeyError.
-        nonlocal listener_removed
-        if listener_removed:
-            return
-        listener_removed = True
-        remove_listener()
+    def _add_new(new_entities: Iterable[Entity], update_before_add: bool = False) -> None:
+        pending = [
+            entity
+            for entity in new_entities
+            if entity.unique_id is not None and entity.unique_id not in registered
+        ]
+        if pending:
+            registered.update(key for entity in pending if (key := entity.unique_id) is not None)
+            async_add_entities(pending, update_before_add)
 
     @callback
-    def _on_first_update() -> None:
-        if coordinator.data is None:
+    def _discover_entities() -> None:
+        if coordinator.unloading or coordinator.data is None:
             return
-        _remove_listener()
-        create_entities(coordinator, async_add_entities)
+        create_entities(coordinator, _add_new)
 
-    remove_listener = coordinator.async_add_listener(_on_first_update)
-    entry.async_on_unload(_remove_listener)
+    entry.async_on_unload(coordinator.async_add_listener(_discover_entities))
+    _discover_entities()
 
 
 class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
@@ -69,7 +67,11 @@ class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
                 header.get("applianceModel")
                 or header.get("ApplianceModel")
                 or metadata.get("wheModel")
-                or "Aerotop / BSB"
+                or (
+                    "Aerotop / Galevo"
+                    if coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
+                    else "Aerotop / BSB"
+                )
             ),
             name=f"ELCO Aerotop {coordinator.api.gateway_id}",
             serial_number=str(metadata.get("gwSerial") or coordinator.api.gateway_id),

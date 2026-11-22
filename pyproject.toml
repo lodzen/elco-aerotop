@@ -1,6 +1,6 @@
 [project]
 name = "elco-aerotop"
-version = "0.3.17"
+version = "0.4.0-beta.1"
 description = "Home Assistant integration for ELCO Aerotop heat pumps via Remocon.net"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,8 +10,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest",
-    "pytest-asyncio",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.2",
     "ruff",
     # Matches the Home Assistant version in the dev/test container.
     # HA 2026.11 requires Python >=3.14.2; on older interpreters the

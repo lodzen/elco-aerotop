@@ -10,16 +10,16 @@ from homeassistant.helpers.entity import EntityCategory
 
 from .bsb_controls import BSB_NUMBER_CONTROL_SPECS, BsbNumberControlSpec, bsb_point_number
 from .capabilities import supports_cooling
-from .const import SYSTEM_TYPE_GALEVO
+from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import NumericVariable
+from .models import NumericVariable, galevo_item_writable
 
 
 class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
     _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_mode = NumberMode.SLIDER
+    _attr_mode = NumberMode.BOX
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
@@ -80,7 +80,6 @@ class ElcoBsbNumber(ElcoAerotopEntity, NumberEntity):
         if spec.temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-            self._attr_mode = NumberMode.SLIDER
 
     @property
     def native_value(self) -> float | None:
@@ -123,9 +122,7 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
     ``GALEVO_WRITES_ENABLED`` until the contract is exercised.
     """
 
-    # Slider for all item numbers — the controller's own bounds are
-    # symmetric around 0 for offsets (e.g. -7..+7), so 0 sits centered.
-    _attr_mode = NumberMode.SLIDER
+    _attr_mode = NumberMode.BOX
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
@@ -144,6 +141,8 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
         self._attr_name = name
         if temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
+        else:
+            self._attr_mode = NumberMode.SLIDER
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def _item(self) -> dict | None:
@@ -207,6 +206,9 @@ def _create_entities(
     async_add_entities,
 ) -> None:
     entities: list[NumberEntity] = []
+    galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
+    if galevo and not GALEVO_WRITES_ENABLED:
+        return
     if coordinator.data.plant.dhw_comfort_temperature.value is not None:
         entities.append(
             ElcoTemperatureNumber(
@@ -295,7 +297,7 @@ def _create_entities(
         for zone_number in coordinator.data.zones:
             for item_id, suffix, is_temperature in _GALEVO_ZONE_NUMBER_ITEMS:
                 item = coordinator.data.discovery.system_item(item_id, zone_number)
-                if item is None or item.get("readOnly"):
+                if item is None or not galevo_item_writable(item):
                     continue
                 label = suffix.replace("_", " ")
                 entities.append(

@@ -51,6 +51,9 @@ def _install_homeassistant_stubs() -> None:
         def async_set_updated_data(self, data) -> None:
             self.data = data
 
+        def async_update_listeners(self) -> None:
+            pass
+
     config_entries.ConfigEntry = ConfigEntry
     core.HomeAssistant = HomeAssistant
     core.callback = lambda func: func
@@ -105,7 +108,7 @@ def _holiday(*, end: date = HOLIDAY_END, deleted: bool = False) -> dict:
 
 
 class FakeHass:
-    def async_create_background_task(self, coro, _name: str):
+    def async_create_background_task(self, coro, _name: str, *, eager_start=False):
         return asyncio.create_task(coro)
 
 
@@ -902,13 +905,8 @@ async def test_write_refresh_does_not_launch_slow_discovery() -> None:
     coordinator.start_deferred_discovery.assert_not_called()
 
 
-def test_deferred_platform_unload_removes_listener_only_once() -> None:
-    """The deferred-setup listener must survive a double removal.
-
-    Real HA pops coordinator listeners by id (non-idempotent); the lazy-setup
-    path removes the listener on first data AND registers it on entry unload,
-    so unloading after a successful poll must not raise KeyError.
-    """
+def test_platform_registers_late_entities_once_and_stops_on_unload() -> None:
+    """Later polls can add capabilities without duplicating earlier registrations."""
     from homeassistant.helpers import update_coordinator as ha_update_coordinator
 
     class CoordinatorEntity:
@@ -923,14 +921,18 @@ def test_deferred_platform_unload_removes_listener_only_once() -> None:
     device_registry.DeviceInfo = dict
     entity_platform = ModuleType("homeassistant.helpers.entity_platform")
     entity_platform.AddEntitiesCallback = object
+    entity = ModuleType("homeassistant.helpers.entity")
+    entity.Entity = object
     sys.modules.setdefault("homeassistant.helpers.device_registry", device_registry)
     sys.modules.setdefault("homeassistant.helpers.entity_platform", entity_platform)
+    sys.modules.setdefault("homeassistant.helpers.entity", entity)
 
     from custom_components.elco_aerotop.entity import async_setup_platform_entities
 
     class FakeCoordinator:
         def __init__(self) -> None:
             self.data = None
+            self.unloading = False
             self._listeners: dict[int, object] = {}
             self._last_listener_id = 0
 
@@ -954,21 +956,25 @@ def test_deferred_platform_unload_removes_listener_only_once() -> None:
 
     coordinator = FakeCoordinator()
     entry = FakeEntry(coordinator)
-    created: list = []
+    created: list[str] = []
 
     async_setup_platform_entities(
         entry,
-        lambda _entities: None,
-        lambda _coordinator, _add: created.append(True),
+        lambda entities, _: created.extend(entity.unique_id for entity in entities),
+        lambda coordinator, add: add([SimpleNamespace(unique_id=key) for key in coordinator.data]),
     )
 
-    # First data arrives: listener consumes itself and entities are created.
-    coordinator.data = object()
-    for listener in list(coordinator._listeners.values()):
-        listener()
-    assert created == [True]
-    assert coordinator._listeners == {}
+    listener = next(iter(coordinator._listeners.values()))
+    coordinator.data = ["first"]
+    listener()
+    coordinator.data = ["first", "late"]
+    listener()
+    assert created == ["first", "late"]
 
-    # Entry unload replays the same remover — must not raise KeyError.
+    coordinator.unloading = True
+    coordinator.data = ["first", "late", "during_unload"]
+    listener()
+    assert created == ["first", "late"]
     for job in entry.on_unload:
         job()
+    assert coordinator._listeners == {}

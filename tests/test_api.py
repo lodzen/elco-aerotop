@@ -444,9 +444,12 @@ async def test_get_system_items_forwards_culture() -> None:
         [
             *login_responses(),
             FakeResponse(
-                json_data={"ok": True, "data": {"features": {"zones": []}}}
+                json_data={
+                    "ok": True,
+                    "data": {"features": {"zones": []}, "plant": {"systemType": 3}},
+                }
             ),
-            FakeResponse(json_data={"data": {"items": []}}),
+            FakeResponse(json_data={"data": {"items": [{"id": "OutsideTemp", "value": 4}]}}),
         ]
     )
     client = ElcoApiClient(session, "user", "pass", "gateway", "https://example.test")

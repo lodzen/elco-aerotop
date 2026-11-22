@@ -8,9 +8,10 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import SYSTEM_TYPE_GALEVO
+from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
+from .models import galevo_item_writable
 
 
 class ElcoGalevoItemSwitch(ElcoAerotopEntity, SwitchEntity):
@@ -90,8 +91,12 @@ class ElcoGalevoHolidaySwitch(ElcoAerotopEntity, SwitchEntity):
     @override
     def extra_state_attributes(self) -> dict[str, str]:
         return {
-            "holiday_start": self.coordinator.pending_holiday_start.isoformat(),
-            "holiday_end": self.coordinator.pending_holiday_end.isoformat(),
+            key: value.isoformat()
+            for key, value in {
+                "pending_holiday_start": self.coordinator.pending_holiday_start,
+                "pending_holiday_end": self.coordinator.pending_holiday_end,
+            }.items()
+            if value is not None
         }
 
     @override
@@ -116,7 +121,7 @@ def _create_entities(
     coordinator: ElcoDataUpdateCoordinator,
     async_add_entities,
 ) -> None:
-    if coordinator.data.discovery.system_type != SYSTEM_TYPE_GALEVO:
+    if not GALEVO_WRITES_ENABLED or coordinator.data.discovery.system_type != SYSTEM_TYPE_GALEVO:
         return
     entities: list[SwitchEntity] = []
     for item_id, key, name in (
@@ -125,7 +130,7 @@ def _create_entities(
         ("AutomaticThermoregulation", "automatic_thermoregulation", "Automatic thermoregulation"),
     ):
         item = coordinator.data.discovery.system_item(item_id)
-        if item is not None and not item.get("readOnly"):
+        if item is not None and galevo_item_writable(item):
             entities.append(ElcoGalevoItemSwitch(coordinator, item_id, key, name))
     if coordinator.data.discovery.system_item("Holiday") is not None:
         entities.append(ElcoGalevoHolidaySwitch(coordinator))

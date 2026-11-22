@@ -4,11 +4,12 @@
     "step": {
       "user": {
         "title": "Connect to ELCO Remocon.net",
-        "description": "Enter your Remocon.net credentials. Your gateway is detected automatically.",
+        "description": "Enter your Remocon.net credentials. Leave Gateway ID blank for account discovery.",
         "data": {
           "username": "Email",
           "password": "Password",
-          "base_url": "Remocon.net URL"
+          "base_url": "Remocon.net URL",
+          "gateway_id": "Gateway ID"
         }
       },
       "gateway": {
@@ -30,7 +31,9 @@
       "cannot_connect": "Unable to connect to Remocon.net",
       "invalid_auth": "Invalid email or password",
       "no_gateways": "No gateways were found on this account",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "gateway_access_denied": "This account cannot access the configured gateway",
+      "unsupported_controller": "This controller family is unsupported"
     },
     "abort": {
       "already_configured": "This gateway is already configured",

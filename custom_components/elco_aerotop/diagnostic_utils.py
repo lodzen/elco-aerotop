@@ -29,6 +29,11 @@ SENSITIVE_KEYS = {
     "postalcode",
     "plantname",
     "serial",
+    "sn",
+    "token",
+    "authtoken",
+    "arauthtoken",
+    "cookie",
     "technician",
     "username",
 }

@@ -19,7 +19,7 @@ async def async_get_config_entry_diagnostics(
 ) -> dict:
     """Return redacted diagnostics."""
     coordinator = entry.runtime_data
-    raw_data = asdict(coordinator.data)
+    raw_data = asdict(coordinator.data) if coordinator.data is not None else None
     secrets = {
         str(entry.data.get(CONF_USERNAME, "")),
         str(entry.data.get(CONF_PASSWORD, "")),
@@ -30,6 +30,7 @@ async def async_get_config_entry_diagnostics(
             entry.data,
             {CONF_USERNAME, CONF_PASSWORD, CONF_GATEWAY_ID},
         ),
+        "status": "waiting_for_first_snapshot" if raw_data is None else "snapshot_available",
         "response_schema": schema_inventory(raw_data, secrets),
         "data": sanitize_diagnostics(raw_data, secrets),
     }

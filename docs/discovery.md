@@ -30,10 +30,9 @@ Home Assistant diagnostics contain:
 - a probe-status map showing `available`, `partially_available`, or an unavailable error class; and
 - a `response_schema` inventory of every observed JSON path and Python value type.
 
-Slow controller-backed families run after config-entry and entity-platform setup. Their initial
-diagnostic status is `deferred:background` and changes to `available`, `partially_available`, or an
-error class when the background pass completes. This prevents an optional schedule or controller
-timeout from delaying Home Assistant startup.
+Slow controller-backed families run after the first valid core snapshot, including after
+recovery from a failed first poll. A pending entry can export redacted diagnostics.
+Optional reads use `deferred:background` until a result is available.
 
 Deferred requests are serialized with core polling but release the gateway lock between probes.
 The pass stops early on a connection failure, on an HTTP rate limit, or after two consecutive
@@ -42,10 +41,13 @@ source outlet minimum read (line 8430). A `500` from one optional endpoint is tr
 endpoint-specific and does not open the circuit. `Retry-After` postpones the next optional pass;
 otherwise later discovery can recover without affecting core entity availability.
 
-The schedule capture uses the BSB web application's structured `PlantTimeProgBsb/GetData` POST
+For BSB, schedule capture uses the web application's structured `PlantTimeProgBsb/GetData` POST
 contract. The older mobile `timeProgs` route is not used because it is not the schedule source for
 BSB controllers. Annual energy history is queried independently from the cloud metering flag;
 current gateways can expose BSB history while reporting `hasMetering: false`.
+
+Galevo uses separate mobile schedule, energy, and bus-inventory probes. The diagnostic
+export redacts bus-device serials, including the vendor's `sn` key.
 
 The diagnostics implementation recursively redacts configured credentials and gateway IDs,
 common identity and location fields, serial numbers, technician details, and matching identifiers

@@ -15,7 +15,7 @@ from .holiday import current_holiday, has_holiday_source
 
 
 class ElcoRefreshButton(ElcoAerotopEntity, ButtonEntity):
-    """Trigger an immediate coordinator refresh of all gateway data."""
+    """Request a core refresh subject to the server's polling backoff."""
 
     _attr_icon = "mdi:refresh"
     _attr_entity_category = EntityCategory.DIAGNOSTIC

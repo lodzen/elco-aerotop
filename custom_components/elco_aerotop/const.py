@@ -82,13 +82,9 @@ GALEVO_HOLIDAY_PATH: Final = "/api/v2/remote/plantData/{gateway_id}/holiday"
 GALEVO_CONS_SEQUENCES_PATH: Final = (
     "/api/v2/remote/reports/{gateway_id}/consSequencesApi8?usages=Ch,Dhw,Cooling&hasSlp=false"
 )
-# Master switch for Galevo write requests. Request contracts are extracted
-# from the APK proxies (docs/protocol.md) but not yet exercised against a
-# live plant — keep this off until a write is tested deliberately.
-# Master switch for all Galevo writes (APK-verified contracts). Enabled by
-# the user after the contracts were validated; flip back to False to
-# disable every Galevo write path without touching entity definitions.
-GALEVO_WRITES_ENABLED: Final = True
+# The beta enables the hardware-verified plant mode route separately.
+GALEVO_WRITES_ENABLED: Final = False
+GALEVO_PLANT_MODE_WRITE_ENABLED: Final = True
 GALEVO_SYSTEM_STATE_PATH: Final = "/api/v2/remote/plantData/{gateway_id}/systemState"
 GALEVO_TIME_PROG_PATH: Final = "/api/v2/remote/timeProgs/{gateway_id}/{program_id}"
 GALEVO_GATEWAY_INFO_PATH: Final = "/api/v2/remote/plants/{gateway_id}/gatewayInfo"
@@ -287,6 +283,32 @@ GALEVO_ZONE_DATA_ITEM_IDS: Final = (
     "VirtComfortTemp",
     "VirtReducedTemp",
     "VirtTempOffsetCool",
+)
+
+# Preserve the request shape used by BSB before Galevo support.
+BSB_GLOBAL_DATA_ITEM_IDS: Final = tuple(
+    item
+    for item in GALEVO_GLOBAL_DATA_ITEM_IDS
+    if item
+    not in {
+        "IsResistorOn",
+        "IsDhwBoost",
+        "QuietModeStart",
+        "QuietModeEnd",
+        "Em30QuietOptions",
+        "SavingEcologyLogic",
+    }
+)
+BSB_ZONE_DATA_ITEM_IDS: Final = tuple(
+    item
+    for item in GALEVO_ZONE_DATA_ITEM_IDS
+    if item
+    not in {
+        "ZoneComfortCoolingTemp",
+        "ZoneEconomyCoolingTemp",
+        "ZoneAntiFreezeTemp",
+        "ZoneFireplace",
+    }
 )
 
 # The mobile endpoint returns HTTP 500 when a request contains an item the

@@ -32,9 +32,19 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MIN_SCAN_INTERVAL,
+    SYSTEM_TYPE_BSB,
+    SYSTEM_TYPE_GALEVO,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _UnsupportedController(ValueError):
+    """The remote account returned a known, unsupported controller family."""
+
+
+class _GatewayAccessDenied(ValueError):
+    """The configured gateway does not belong to the authenticated account."""
 
 
 def _user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
@@ -42,7 +52,8 @@ def _user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_USERNAME, default=values.get(CONF_USERNAME, "")): str,
-            vol.Required(CONF_PASSWORD, default=values.get(CONF_PASSWORD, "")): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Optional(CONF_GATEWAY_ID, default=values.get(CONF_GATEWAY_ID, "")): str,
             vol.Optional(
                 CONF_BASE_URL,
                 default=values.get(CONF_BASE_URL, DEFAULT_BASE_URL),
@@ -69,7 +80,13 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._credentials: dict[str, Any] = {}
         self._plants: dict[str, dict[str, Any]] = {}
 
-    async def _validate(self, user_input: dict[str, Any]) -> None:
+    async def _validate(
+        self,
+        user_input: dict[str, Any],
+        *,
+        listed: bool = False,
+        reauth: bool = False,
+    ) -> None:
         session = async_create_clientsession(self.hass, auto_cleanup=False)
         client = ElcoApiClient(
             session,
@@ -80,17 +97,35 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         try:
             await client.async_login()
+            if reauth:
+                plants = await client.async_list_plants()
+                if not any(
+                    client.gateway_id
+                    == str(plant.get("gwId") or plant.get("gwSerial", "")).strip().upper()
+                    for plant in plants
+                ):
+                    raise _GatewayAccessDenied
+                listed = True
             try:
-                # Best-effort probe only: GetData/Features can return transient
-                # controller-side HTTP 5xx that the coordinator retries at
-                # runtime. plants/lite already proved the gateway is registered.
-                await client.async_get_features()
+                features = await client.async_get_features()
             except (ElcoConnectionError, ElcoResponseError) as err:
-                _LOGGER.info(
-                    "Remocon gateway %s did not answer the features probe during setup: %s",
-                    user_input[CONF_GATEWAY_ID],
-                    err,
-                )
+                if (
+                    not listed
+                    or isinstance(err, ElcoResponseError)
+                    and (err.status not in {408, 429, 500, 502, 503, 504})
+                ):
+                    raise
+                _LOGGER.debug("Remocon features probe will retry during polling")
+                return
+            family = client.system_type
+            if family not in (None, SYSTEM_TYPE_BSB, SYSTEM_TYPE_GALEVO):
+                raise _UnsupportedController
+            if not listed:
+                zones = await client.async_get_zone_numbers(features)
+                if family == SYSTEM_TYPE_GALEVO:
+                    await client.async_get_galevo_data(features, zones)
+                else:
+                    await client.async_get_data(zones, use_cache=False)
         finally:
             session.detach()
 
@@ -116,14 +151,18 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 discovered[gateway_id.upper()] = plant
         return discovered
 
-    async def _async_validate_gateway(self, user_input: dict[str, Any]) -> dict[str, str]:
+    async def _async_validate_gateway(
+        self, user_input: dict[str, Any], *, listed: bool = False
+    ) -> dict[str, str]:
         """Validate a gateway selection; return form errors, empty on success."""
         try:
-            await self._validate(user_input)
+            await self._validate(user_input, listed=listed)
+        except _UnsupportedController:
+            return {"base": "unsupported_controller"}
         except ElcoAuthenticationError:
             return {"base": "invalid_auth"}
         except (ElcoConnectionError, ElcoResponseError) as err:
-            _LOGGER.debug("Unable to connect to Remocon during setup: %s", err, exc_info=True)
+            _LOGGER.debug("Unable to connect to Remocon during setup: %s", err)
             return {"base": "cannot_connect"}
         except Exception:  # noqa: BLE001 - config flows must turn unknown API errors into UI errors
             _LOGGER.exception("Unexpected error while validating the Remocon connection")
@@ -148,30 +187,49 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             user_input[CONF_USERNAME] = user_input[CONF_USERNAME].strip()
-            user_input[CONF_BASE_URL] = user_input[CONF_BASE_URL].strip().rstrip("/")
+            user_input[CONF_BASE_URL] = (
+                user_input.get(CONF_BASE_URL, DEFAULT_BASE_URL).strip().rstrip("/")
+            )
+            manual_id = user_input.pop(CONF_GATEWAY_ID, "").strip().upper()
+            if manual_id:
+                candidate = {**user_input, CONF_GATEWAY_ID: manual_id}
+                errors = await self._async_validate_gateway(candidate)
+                if not errors:
+                    return await self._async_create_gateway_entry(candidate, None)
+                return self._show_user_form(candidate, errors)
             try:
                 plants = await self._async_discover_plants(user_input)
             except ElcoAuthenticationError:
                 errors["base"] = "invalid_auth"
             except (ElcoConnectionError, ElcoResponseError) as err:
-                _LOGGER.debug("Unable to connect to Remocon during setup: %s", err, exc_info=True)
+                _LOGGER.debug("Unable to connect to Remocon during setup: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:  # noqa: BLE001 - config flows must turn unknown API errors into UI errors
                 _LOGGER.exception("Unexpected error while validating the Remocon connection")
                 errors["base"] = "unknown"
             else:
+                configured = {
+                    str(entry.unique_id or entry.data.get(CONF_GATEWAY_ID, "")).upper()
+                    for entry in self._async_current_entries()
+                }
+                available = {key: plant for key, plant in plants.items() if key not in configured}
                 if not plants:
                     errors["base"] = "no_gateways"
-                elif len(plants) == 1:
-                    gateway_id, plant = next(iter(plants.items()))
+                elif not available:
+                    return self.async_abort(reason="already_configured")
+                elif len(available) == 1:
+                    gateway_id, plant = next(iter(available.items()))
                     user_input[CONF_GATEWAY_ID] = gateway_id
-                    errors = await self._async_validate_gateway(user_input)
+                    errors = await self._async_validate_gateway(user_input, listed=True)
                     if not errors:
                         return await self._async_create_gateway_entry(user_input, plant)
                 else:
                     self._credentials = user_input
-                    self._plants = plants
+                    self._plants = available
                     return await self.async_step_gateway()
+        return self._show_user_form(user_input, errors)
+
+    def _show_user_form(self, user_input, errors: dict[str, str]) -> ConfigFlowResult:
         return self.async_show_form(
             step_id="user",
             data_schema=_user_schema(user_input),  # ty: ignore[invalid-argument-type] HA still accepts voluptuous schemas at runtime
@@ -188,7 +246,7 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             gateway_id = user_input[CONF_GATEWAY_ID]
             candidate = {**self._credentials, CONF_GATEWAY_ID: gateway_id}
-            errors = await self._async_validate_gateway(candidate)
+            errors = await self._async_validate_gateway(candidate, listed=True)
             if not errors:
                 return await self._async_create_gateway_entry(candidate, self._plants[gateway_id])
         return self.async_show_form(
@@ -225,7 +283,11 @@ class ElcoAerotopConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             candidate = {**entry.data, **user_input}
             try:
-                await self._validate(candidate)
+                await self._validate(candidate, reauth=True)
+            except _GatewayAccessDenied:
+                errors["base"] = "gateway_access_denied"
+            except _UnsupportedController:
+                errors["base"] = "unsupported_controller"
             except ElcoAuthenticationError:
                 errors["base"] = "invalid_auth"
             except (ElcoConnectionError, ElcoResponseError) as err:

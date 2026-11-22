@@ -10,6 +10,10 @@ is the read-only source of truth for periods returned by the controller. Dedicat
 and control entities perform the small set of writes whose payloads and side effects have been
 verified.
 
+This workflow applies to BSB controllers. The Galevo beta exposes its reported
+holiday-active flag. Use the official application to schedule or cancel a Galevo holiday
+while those write contracts are verified.
+
 ## Entity model
 
 | Entity | Purpose | Access |

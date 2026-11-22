@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import SelectVariable
+from .models import GALEVO_ZONE_OFF, SelectVariable
 
 ZONE_MODE_PROTECTION = 0
 ZONE_MODE_AUTOMATIC = 1
@@ -40,6 +40,8 @@ def zone_hvac_mode(variable: SelectVariable, *, cooling: bool = False) -> str | 
     """Translate the current ELCO zone mode to a Home Assistant HVAC mode."""
     if variable.value == ZONE_MODE_AUTOMATIC:
         return "auto"
+    if variable.value == GALEVO_ZONE_OFF:
+        return "off"
     if variable.value in {ZONE_MODE_PROTECTION, ZONE_MODE_REDUCED, ZONE_MODE_COMFORT}:
         return "cool" if cooling else "heat"
     return None
@@ -49,6 +51,8 @@ def zone_hvac_modes(variable: SelectVariable, *, cooling: bool = False) -> tuple
     """Return only HVAC modes backed by options offered by the gateway."""
     supported = _supported_values(variable)
     modes: list[str] = []
+    if GALEVO_ZONE_OFF in supported:
+        modes.append("off")
     if ZONE_MODE_AUTOMATIC in supported:
         modes.append("auto")
     if supported.intersection({ZONE_MODE_PROTECTION, ZONE_MODE_REDUCED, ZONE_MODE_COMFORT}):
@@ -77,6 +81,8 @@ def zone_mode_for_hvac(
     supported = _supported_values(variable)
     if hvac_mode == "auto" and ZONE_MODE_AUTOMATIC in supported:
         return ZONE_MODE_AUTOMATIC
+    if hvac_mode == "off" and GALEVO_ZONE_OFF in supported:
+        return GALEVO_ZONE_OFF
     direct_mode = "cool" if cooling else "heat"
     if hvac_mode == direct_mode:
         for value in (ZONE_MODE_COMFORT, ZONE_MODE_REDUCED, ZONE_MODE_PROTECTION):

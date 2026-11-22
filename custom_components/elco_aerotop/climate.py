@@ -15,6 +15,7 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .control_mapping import (
     zone_hvac_mode,
     zone_hvac_modes,
@@ -171,6 +172,8 @@ def _create_entities(
     coordinator: ElcoDataUpdateCoordinator,
     async_add_entities,
 ) -> None:
+    if not GALEVO_WRITES_ENABLED and coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO:
+        return
     entities = [
         ElcoZoneClimate(coordinator, zone_number)
         for zone_number, zone in coordinator.data.zones.items()

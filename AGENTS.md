@@ -27,9 +27,12 @@ Custom Home Assistant integration for ELCO/Ariston Remocon.net gateways
 Run from the repo root:
 
 ```bash
-uv run pytest        # test suite (stubs Home Assistant locally)
-uv run ruff check .  # lint + import sorting
-uv run ty check      # type checking (scope: custom_components, tools)
+uv run --locked pytest tests
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+# Python 3.14.2+ with the locked Home Assistant dependencies
+uv run --locked pytest integration_tests
+uv run --locked ty check
 ```
 
 The dev environment is uv-managed; `homeassistant` and

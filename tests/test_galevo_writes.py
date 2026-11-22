@@ -30,6 +30,7 @@ from custom_components.elco_aerotop.models import (
 def _client(monkeypatch: pytest.MonkeyPatch | None = None) -> ElcoApiClient:
     if monkeypatch is not None:
         monkeypatch.setattr(api_module, "GALEVO_WRITES_ENABLED", False)
+        monkeypatch.setattr(api_module, "GALEVO_PLANT_MODE_WRITE_ENABLED", False)
     return ElcoApiClient(FakeSession([]), "user", "pass", "gw", "https://example.test")
 
 
@@ -167,8 +168,10 @@ async def test_galevo_zone_temperature_dispatch_validates(
     assert client._session.calls == []
 
 
-def _write_client() -> tuple[ElcoApiClient, FakeSession]:
+@pytest.fixture
+def _write_client(monkeypatch) -> tuple[ElcoApiClient, FakeSession]:
     """Client whose fake session answers mobile login + one write ack."""
+    monkeypatch.setattr(api_module, "GALEVO_WRITES_ENABLED", True)
     session = FakeSession(
         [
             FakeResponse(json_data={"token": "t"}),
@@ -182,11 +185,11 @@ def _write_client() -> tuple[ElcoApiClient, FakeSession]:
 
 
 @pytest.mark.asyncio
-async def test_galevo_change_value_uses_new_old_wire_names() -> None:
+async def test_galevo_change_value_uses_new_old_wire_names(_write_client) -> None:
     """ChangeValueDto serializes as {new, old} (ChangeValueDtoSerializer),
     not the Kotlin property names newValue/oldValue — the long names made
     the gateway return HTTP 500 live on 2026-11-19."""
-    client, session = _write_client()
+    client, session = _write_client
 
     await client.async_set_galevo_dhw_temp(52, old_temperature=53)
 
@@ -197,18 +200,16 @@ async def test_galevo_change_value_uses_new_old_wire_names() -> None:
 
 
 @pytest.mark.asyncio
-async def test_galevo_dhw_timeprog_uses_new_old_and_comf_econ() -> None:
+async def test_galevo_dhw_timeprog_uses_new_old_and_comf_econ(_write_client) -> None:
     """The TemperaturesDto pair serializes as comf/econ inside new/old."""
-    client, session = _write_client()
+    client, session = _write_client
 
     await client.async_set_galevo_dhw_timeprog_temperatures(
         comfort=52, economy=40, old_comfort=53, old_economy=40
     )
 
     method, url, kwargs = session.calls[-1]
-    assert url.endswith(
-        "/api/v2/remote/plantData/GW/dhwTimeProgTemperatures"
-    )
+    assert url.endswith("/api/v2/remote/plantData/GW/dhwTimeProgTemperatures")
     assert kwargs["json"] == {
         "new": {"comf": 52, "econ": 40},
         "old": {"comf": 53, "econ": 40},
@@ -216,9 +217,9 @@ async def test_galevo_dhw_timeprog_uses_new_old_and_comf_econ() -> None:
 
 
 @pytest.mark.asyncio
-async def test_galevo_zone_temperatures_uses_comf_econ() -> None:
+async def test_galevo_zone_temperatures_uses_comf_econ(_write_client) -> None:
     """Zone temperature writes share TemperaturesDto serialization."""
-    client, session = _write_client()
+    client, session = _write_client
 
     await client.async_set_galevo_zone_temperatures(
         1, comfort=21, economy=17, old_comfort=20, old_economy=16
@@ -233,9 +234,9 @@ async def test_galevo_zone_temperatures_uses_comf_econ() -> None:
 
 
 @pytest.mark.asyncio
-async def test_galevo_zone_and_dhw_mode_use_new_old() -> None:
+async def test_galevo_zone_and_dhw_mode_use_new_old(_write_client) -> None:
     """Scalar/enum writes use the same {new, old} ChangeValueDto shape."""
-    client, session = _write_client()
+    client, session = _write_client
 
     await client.async_set_galevo_zone_mode(1, 2, old_mode=3)
     assert session.calls[-1][1].endswith("/api/v2/remote/zones/GW/1/mode")
@@ -253,13 +254,11 @@ async def test_galevo_zone_and_dhw_mode_use_new_old() -> None:
 
 
 @pytest.mark.asyncio
-async def test_galevo_holiday_uses_new_old() -> None:
+async def test_galevo_holiday_uses_new_old(_write_client) -> None:
     """Holiday set sends new=start/old=end; reset sends old only."""
-    client, session = _write_client()
+    client, session = _write_client
 
-    await client.async_set_galevo_holiday(
-        start="2026-12-20T00:00:00", end="2027-01-04T23:59:59"
-    )
+    await client.async_set_galevo_holiday(start="2026-12-20T00:00:00", end="2027-01-04T23:59:59")
     assert session.calls[-1][1].endswith("/api/v2/remote/plantData/GW/holiday")
     assert session.calls[-1][2]["json"] == {
         "new": "2026-12-20T00:00:00",

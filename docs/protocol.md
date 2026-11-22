@@ -126,7 +126,7 @@ data-item and zone endpoints instead of `PlantHomeBsb`:
 matches `dataItems`, additionally carrying localized `optTexts`, real min/max bounds and
 `readOnly` flags. `filter.notEssentials: false` returns only the home-screen essentials;
 `true` adds `ZoneHeatRequest`, `IsHeatingPumpOn`, `IsQuite`, `IsDhwBoost` and `IsResistorOn`.
-The integration merges both item sources per zone; R2 entries win on conflicts.
+The R2 route is recorded here as protocol evidence. The poll uses the mobile item catalog.
 
 `dataItems` returns a map keyed `"<itemId>:<zone>"` whose entries carry `id`, `zone`, `kind`,
 `value`, `min`/`max`/`step`, `options`/`optTexts`, `readOnly`, `error` and `invalid` flags. Items
@@ -158,17 +158,18 @@ returned was already present in the mobile `dataItems` response
 The only shape difference: R2 items add `gatewayId`, `expiresOn` and `unit`
 keys and use `[]` instead of `null` for absent `options`/`optTexts`.
 The per-zone R2 `GetData` call was therefore removed from the poll path —
-the poll is now `dataItems/get` + `zones/{n}` per zone, plus the cached
-Features lookup. R2 remains in use for Features, the deferred
-plant-metadata/header/user-data probes and `SetData` writes.
+the poll uses `dataItems/get` and `zones/{n}`, plus a cached Features lookup.
+R2 supplies Features and the metadata and header probes. Galevo uses the mobile plant-mode
+write route with a fresh readback. The core cookie-authenticated item request renews its
+R2 session once on an authentication rejection, independently of mobile token renewal.
 
 Galevo enum values differ from the BSB constants used elsewhere in this document
 (APK `eZoneMode`/`eDhwMode`): zone modes are `0=Off, 1=ManualNight, 2=Manual, 3=TimeProg` and DHW
 modes are `0=Disabled, 1=Time Based, 2=Always active`. `ZoneState.from_galevo` normalizes them
-onto the canonical model values (Off→protection, ManualNight→reduced, Manual→comfort,
-TimeProg→automatic; Disabled→off, Time Based→eco, Always active→on) so entity mappings stay
-family-agnostic. Zones without a room probe report `ZoneMeasuredTemp`/`room` as `0` rather than an
-error flag; the parser suppresses that placeholder when `features.zones[].roomSens` is false.
+onto the canonical model values (Off→off, ManualNight→reduced, Manual→comfort,
+TimeProg→automatic; Disabled→off, Time Based→heat pump, Always active→performance).
+Zones without a room probe can report a zero placeholder, which is suppressed when the
+feature map explicitly reports no room sensor.
 
 Verified against a live Galevo gateway (`tools/remocon_probe.py`, `captures/`): `dataItems`,
 `zones/{1..3}`, `systemState`, `timeProgs/{1,7}`, `menuItems`, `busDevices`, `gatewayInfo`,
@@ -284,8 +285,10 @@ with `[{id: "U6_9_0", value: 52, prevValue: 53}]` (browser capture).
 Holiday uses the same `ChangeValueDto<LocalDateTime>` shape: `setHoliday(start, end)`
 serializes start as `new` and end as `old` (ISO local date-times, no zone);
 `resetHoliday(now)` sends `old` only. The `Holiday` data item (options [0,1])
-mirrors the controller's holiday flag and backs `switch.<device>_holiday`, whose
-pending window is edited via `date.<device>_holiday_start`/`_holiday_end`.
+mirrors the controller's holiday flag and backs its read-only beta diagnostic.
+The experimental scheduling implementation keeps explicit draft dates in memory and
+uses Home Assistant's configured time zone for validation. Its writable entities remain
+gated pending verification against the gateway's clock and reported schedule.
 
 `SetDataItemDto` = the full `DataItemDto` as returned by `dataItems/get` plus
 `prevValue` (the previous `value`) and `prevExpiresOn` (the previous `expiresOn`,
@@ -297,12 +300,11 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 `PlantDataProxy.set*` methods (`com.remotethermo.aristonnet.data.remote.proxies`),
 `ChangeValueDto`/`TemperaturesDto`/`SetDataItemsRequest`/`SetDataItemDto` DTOs.
 
-Galevo write paths are gated by `GALEVO_WRITES_ENABLED` (`const.py`) — enabled by
-the user on 2026-11-19 after the APK contracts were verified; set it back to
-`False` to disable every Galevo write without touching entity definitions. `async_set_zone_temperatures`, `async_set_dhw` and `async_set_zone_mode`
-dispatch on `system_type`: Galevo uses the mobile routes above (zone/DHW enum values
-are translated back from canonical via `GALEVO_*_MODE_TO_RAW`), other families keep
-the BSB paths.
+The beta has separate flags for plant-mode writes and other Galevo writes. Plant mode is
+enabled based on the recorded hardware round trip and verified in Home Assistant with
+mocked responses. Other Galevo write entities are gated off. The experimental request
+contracts are retained for focused testing and later controller verification. BSB uses its
+existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):
 
@@ -331,8 +333,7 @@ wire keys:** `POST /api/v2/remote/plantData/{gw}/mode` with the Kotlin
 wire names (`{"new":0,"old":1}` — `ePlantMode`: Summer 0, Winter 1,
 HeatingOnly 2, Cooling 3, CoolingOnly 4, Off 5) the same route applies the
 mode: `{"success": true}` followed by `PlantMode=0`, verified both
-directions (Winter→Summer→Winter) on 2026-11-19. The integration uses this
-mobile route for plant-mode writes; the R2 `PlantHome/SetData` contract
+directions (Winter→Summer→Winter) on 2026-11-19. The beta uses this mobile route for plant-mode writes and confirms the result with an uncached read; the R2 `PlantHome/SetData` contract
 (`{features, prevItems, viewModel}` → `changedItems`) remains documented
 below as the browser-app alternative. `viewModel` carries the semantic fields
 (zone context, temperature items, mode flags); pure display strings
@@ -362,8 +363,8 @@ and is the single family signal for entity platforms. Registration rules:
   entities (or hit BSB write paths) on Galevo.
 - **Galevo entities** are data-item gated (`_has_system_item`) or deferred-probe gated
   (`probe_status`); nothing Galevo-specific registers on BSB.
-- `GALEVO_GLOBAL_DATA_ITEM_IDS`/`GALEVO_ZONE_DATA_ITEM_IDS` are the APK data-item catalog,
-  verified on Galevo; on BSB the same `dataItems` endpoint is probed opportunistically.
+- The Galevo item catalog is queried only on Galevo. BSB retains its original optional
+  catalog and request language.
 - R2 view POST bodies (`PlantAdvancedSettings/Index`, `PlantDhw/Index`, …) are **never
   hardcoded**: build them from the live `Features/{gw}` response
   (`build_r2_view_body` in `tools/remocon_probe.py` whitelists the key set the web app

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from math import isfinite
 from typing import Any
 
 
@@ -19,9 +20,13 @@ def _number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
-        return float(value)
+        try:
+            return float(value) if isfinite(value) else None
+        except OverflowError:
+            return None
     try:
-        return float(str(value).replace(",", "."))
+        parsed = float(str(value).replace(",", "."))
+        return parsed if isfinite(parsed) else None
     except (TypeError, ValueError):
         return None
 
@@ -253,6 +258,8 @@ class NumericVariable:
         )
 
     def validate(self, value: float) -> None:
+        if not isfinite(value):
+            raise ValueError("Temperature or setting must be a finite number")
         if self.minimum is not None and value < self.minimum:
             raise ValueError(f"Value {value} is below the minimum {self.minimum}")
         if self.maximum is not None and value > self.maximum:
@@ -317,8 +324,9 @@ class SelectVariable:
 
 # Galevo zone modes (APK eZoneMode: Off=0, ManualNight=1, Manual=2, TimeProg=3)
 # normalized onto the canonical values used by control_mapping
-# (Protection=0, Automatic=1, Reduced=2, Comfort=3).
-_GALEVO_ZONE_MODE_MAP: dict[int, int] = {0: 0, 1: 2, 2: 3, 3: 1}
+# (Automatic=1, Reduced=2, Comfort=3). Protection and Off are distinct.
+GALEVO_ZONE_OFF = -2
+_GALEVO_ZONE_MODE_MAP: dict[int, int] = {0: GALEVO_ZONE_OFF, 1: 2, 2: 3, 3: 1}
 
 # Galevo DHW modes (0=Disabled, 1=Time Based, 2=Always active) normalized onto
 # the canonical DHW values (0=off, 1=on, 3=performance). Time Based is the
@@ -358,13 +366,37 @@ def _galevo_item(
 
 
 def _galevo_value(item: dict[str, Any] | None) -> float | None:
-    if item is None or item.get("invalid") is True:
-        return None
-    return _number(item.get("value"))
+    return _number(item.get("value")) if item and galevo_item_available(item) else None
+
+
+def controller_system_type(response: Any) -> int | None:
+    """Return a valid family code from the vendor Features envelope."""
+    data = response.get("data", response) if isinstance(response, dict) else None
+    plant = data.get("plant") if isinstance(data, dict) else None
+    family = _number(plant.get("systemType")) if isinstance(plant, dict) else None
+    return int(family) if family is not None and family.is_integer() else None
+
+
+def galevo_item_available(item: dict[str, Any]) -> bool:
+    """Return whether the controller reports a usable data item."""
+    return (
+        item.get("available") is not False
+        and item.get("isAvailable") is not False
+        and item.get("error") is not True
+        and item.get("invalid") is not True
+    )
+
+
+def galevo_item_writable(item: dict[str, Any]) -> bool:
+    return (
+        galevo_item_available(item)
+        and item.get("readOnly", item.get("ro")) is False
+        and _number(item.get("value")) is not None
+    )
 
 
 def _galevo_bool(item: dict[str, Any] | None) -> bool | None:
-    if item is None:
+    if item is None or not galevo_item_available(item):
         return None
     return _boolean(item.get("value"))
 
@@ -389,16 +421,17 @@ def _galevo_select(
     if not isinstance(item, dict):
         return SelectVariable(value=None)
     raw_value = _galevo_value(item)
-    value = int(raw_value) if raw_value is not None else None
+    value = int(raw_value) if raw_value is not None and raw_value.is_integer() else None
     options: list[Option] = []
     allowed = item.get("options")
-    labels = item.get("optTexts") or []
+    labels = item.get("optTexts")
     if isinstance(allowed, list):
         for index, option_value in enumerate(allowed):
-            if not isinstance(option_value, int | float):
+            option = _number(option_value)
+            if option is None or not option.is_integer():
                 continue
-            raw_int = int(option_value)
-            if index < len(labels):
+            raw_int = int(option)
+            if isinstance(labels, list) and index < len(labels) and labels[index] is not None:
                 label = str(labels[index])
             elif default_labels and raw_int in default_labels:
                 label = default_labels[raw_int]
@@ -476,6 +509,14 @@ class PlantState:
     dhw_comfort_temperature: NumericVariable
     dhw_reduced_temperature: NumericVariable
     dhw_mode: SelectVariable
+    dhw_always_temperature: NumericVariable = NumericVariable(None)
+
+    @property
+    def dhw_target_temperature(self) -> NumericVariable:
+        """Return the target for the active operation."""
+        if self.dhw_mode.value == 3 and self.dhw_always_temperature.value is not None:
+            return self.dhw_always_temperature
+        return self.dhw_comfort_temperature
 
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> PlantState:
@@ -507,26 +548,22 @@ class PlantState:
             remap=_GALEVO_DHW_MODE_MAP,
             default_labels=_GALEVO_DHW_MODE_LABELS,
         )
+        storage_probe = _galevo_item(items, "DhwStorageTemperature")
         return cls(
             raw={"dataItems": items},
             outside_temperature=_galevo_value(_galevo_item(items, "OutsideTemp")),
             heat_pump_on=_galevo_bool(_galevo_item(items, "IsHeatingPumpOn")),
             flame_on=_galevo_bool(_galevo_item(items, "IsFlameOn")),
             dhw_enabled=None if dhw_mode.value is None else dhw_mode.value != 0,
-            dhw_current_temperature=_galevo_value(
-                _galevo_item(items, "DhwStorageTemperature") or _galevo_item(items, "DhwTemp")
-            ),
+            dhw_current_temperature=_galevo_value(storage_probe),
             outside_temperature_error=_galevo_error(_galevo_item(items, "OutsideTemp")),
-            dhw_temperature_error=_galevo_error(
-                _galevo_item(items, "DhwStorageTemperature") or _galevo_item(items, "DhwTemp")
-            ),
+            dhw_temperature_error=_galevo_error(storage_probe),
             has_outside_temperature_probe=None,
             has_dhw_temperature_probe=None,
-            dhw_comfort_temperature=_galevo_numeric(
-                _galevo_item(items, "DhwTimeProgComfortTemp") or _galevo_item(items, "DhwTemp")
-            ),
+            dhw_comfort_temperature=_galevo_numeric(_galevo_item(items, "DhwTimeProgComfortTemp")),
             dhw_reduced_temperature=_galevo_numeric(_galevo_item(items, "DhwTimeProgEconomyTemp")),
             dhw_mode=dhw_mode,
+            dhw_always_temperature=_galevo_numeric(_galevo_item(items, "DhwTemp")),
         )
 
 
@@ -612,12 +649,16 @@ class ZoneState:
             remap=_GALEVO_ZONE_MODE_MAP,
             default_labels=_GALEVO_ZONE_MODE_LABELS,
         )
-        if mode.value is None and not mode.options:
+        if mode.value is None or not mode.options:
             # zones/{zn}/mod carries value+allowedOptions but no labels.
-            mode = _galevo_select(
+            fallback = _galevo_select(
                 {"value": mod.get("value"), "options": mod.get("allowedOptions")},
                 remap=_GALEVO_ZONE_MODE_MAP,
                 default_labels=_GALEVO_ZONE_MODE_LABELS,
+            )
+            mode = SelectVariable(
+                value=mode.value if mode.value is not None else fallback.value,
+                options=mode.options or fallback.options,
             )
         comfort = NumericVariable.parse(raw.get("comf", {}))
         if comfort.value is None:
@@ -660,7 +701,7 @@ class ZoneState:
             has_room_sensor=has_room_sensor,
             use_reduced_operation_mode_on_holiday=None,
             heating_active=_boolean(raw.get("heat")),
-            cooling_active=None,
+            cooling_active=_boolean(raw.get("isCoolingActive")),
             heat_or_cool_request=_galevo_bool(_galevo_item(items, "ZoneHeatRequest", number)),
         )
 

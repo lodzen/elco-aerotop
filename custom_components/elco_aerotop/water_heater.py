@@ -14,12 +14,8 @@ from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import SYSTEM_TYPE_GALEVO
+from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .control_mapping import (
-    DHW_MODE_ON,
-    dhw_galevo_mode_for_operation,
-    dhw_galevo_operation,
-    dhw_galevo_operations,
     dhw_mode_for_operation,
     dhw_operation,
     dhw_operations,
@@ -36,35 +32,24 @@ class ElcoWaterHeater(ElcoAerotopEntity, WaterHeaterEntity):
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
         super().__init__(coordinator, "domestic_hot_water")
-        variable = coordinator.data.plant.dhw_comfort_temperature
+        variable = coordinator.data.plant.dhw_target_temperature
         self._attr_min_temp = variable.minimum if variable.minimum is not None else 5.0
         self._attr_max_temp = variable.maximum if variable.maximum is not None else 65.0
         self._attr_target_temperature_step = variable.step or 0.5
-        # Galevo exposes its own mode labels (e.g. "Time Based", "Always
-        # active"); BSB keeps the canonical Home Assistant operations.
         self._galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
         dhw_mode = coordinator.data.plant.dhw_mode
-        if self._galevo:
-            self._attr_operation_list = list(dhw_galevo_operations(dhw_mode))
-        else:
-            self._attr_operation_list = list(dhw_operations(dhw_mode))
+        self._attr_operation_list = list(dhw_operations(dhw_mode))
         self._attr_supported_features = (
             WaterHeaterEntityFeature.TARGET_TEMPERATURE | WaterHeaterEntityFeature.OPERATION_MODE
         )
-        if self._has_on_off_operations(dhw_mode):
+        operations = self._attr_operation_list
+        if STATE_OFF in operations and (
+            STATE_HEAT_PUMP in operations or self._galevo and "performance" in operations
+        ):
             self._attr_supported_features |= WaterHeaterEntityFeature.ON_OFF
-
-    def _has_on_off_operations(self, variable) -> bool:
-        if self._galevo:
-            values = {option.value for option in variable.options}
-            return 0 in values and any(value != 0 for value in values)
-        operations = self._attr_operation_list or []
-        return STATE_OFF in operations and STATE_HEAT_PUMP in operations
 
     def _mode_for_operation(self, operation: str) -> int:
         variable = self.coordinator.data.plant.dhw_mode
-        if self._galevo:
-            return dhw_galevo_mode_for_operation(variable, operation)
         return dhw_mode_for_operation(variable, operation)
 
     @property
@@ -78,13 +63,11 @@ class ElcoWaterHeater(ElcoAerotopEntity, WaterHeaterEntity):
     @property
     def target_temperature(self) -> float | None:
         """Return the normal DHW comfort target."""
-        return self.coordinator.data.plant.dhw_comfort_temperature.value
+        return self.coordinator.data.plant.dhw_target_temperature.value
 
     @property
     def current_operation(self) -> str | None:
-        """Return the current DHW operation (gateway label on Galevo)."""
-        if self._galevo:
-            return dhw_galevo_operation(self.coordinator.data.plant.dhw_mode)
+        """Return a stable Home Assistant operation value."""
         return dhw_operation(self.coordinator.data.plant.dhw_mode)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -112,26 +95,16 @@ class ElcoWaterHeater(ElcoAerotopEntity, WaterHeaterEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn DHW on using the controller's normal On mode."""
         if self._galevo:
-            variable = self.coordinator.data.plant.dhw_mode
-            label = next(
-                (o.label for o in variable.options if o.value == DHW_MODE_ON),
-                next((o.label for o in variable.options if o.value != 0), None),
+            await self.async_set_operation_mode(
+                STATE_HEAT_PUMP
+                if STATE_HEAT_PUMP in (self._attr_operation_list or ())
+                else "performance"
             )
-            if label is None:
-                raise HomeAssistantError("The gateway offers no DHW on mode")
-            await self.async_set_operation_mode(label)
             return
         await self.async_set_operation_mode(STATE_HEAT_PUMP)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn DHW off using the controller's Off mode."""
-        if self._galevo:
-            variable = self.coordinator.data.plant.dhw_mode
-            label = next((o.label for o in variable.options if o.value == 0), None)
-            if label is None:
-                raise HomeAssistantError("The gateway offers no DHW off mode")
-            await self.async_set_operation_mode(label)
-            return
         await self.async_set_operation_mode(STATE_OFF)
 
 
@@ -149,10 +122,8 @@ def _create_entities(
     async_add_entities,
 ) -> None:
     plant = coordinator.data.plant
-    galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
-    has_operations = (
-        dhw_galevo_operations(plant.dhw_mode) if galevo else dhw_operations(plant.dhw_mode)
-    )
-    if plant.dhw_comfort_temperature.value is None or not has_operations:
+    if not GALEVO_WRITES_ENABLED and coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO:
+        return
+    if plant.dhw_target_temperature.value is None or not dhw_operations(plant.dhw_mode):
         return
     async_add_entities([ElcoWaterHeater(coordinator)])

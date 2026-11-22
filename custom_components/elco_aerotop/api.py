@@ -29,11 +29,13 @@ from .const import (
     AUTOMATED_MONITORING_PATH,
     BSB_BOILER_DATA_PATH,
     BSB_DISCOVERY_ADDRESSES,
+    BSB_GLOBAL_DATA_ITEM_IDS,
     BSB_PLANT_DATA_PATH,
     BSB_READ_PATH,
     BSB_TIME_PROGRAM_IDS,
     BSB_TIME_PROGRAM_PATH,
     BSB_WRITE_PATH,
+    BSB_ZONE_DATA_ITEM_IDS,
     BUS_ERRORS_PATH,
     DATA_ITEMS_PATH,
     FEATURES_PATH,
@@ -47,6 +49,7 @@ from .const import (
     GALEVO_HOLIDAY_PATH,
     GALEVO_HOME_DATA_PATH,
     GALEVO_PLANT_MODE_PATH,
+    GALEVO_PLANT_MODE_WRITE_ENABLED,
     GALEVO_SYSTEM_STATE_PATH,
     GALEVO_TIME_PROG_PATH,
     GALEVO_WRITES_ENABLED,
@@ -76,24 +79,15 @@ from .models import (
     GALEVO_DHW_MODE_TO_RAW,
     GALEVO_ZONE_MODE_TO_RAW,
     ElcoData,
+    NumericVariable,
     PlantState,
     ZoneState,
     bsb_point_available,
+    controller_system_type,
+    galevo_item_writable,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-_DEBUG_PAYLOAD_LIMIT = 2000
-
-
-def _debug_payload(payload: Any) -> str:
-    """Return a bounded repr of a request/response payload for debug logs."""
-    if payload is None:
-        return "-"
-    text = repr(payload)
-    if len(text) > _DEBUG_PAYLOAD_LIMIT:
-        return f"{text[:_DEBUG_PAYLOAD_LIMIT]}...({len(text)} chars total)"
-    return text
 
 _CONNECT_TIMEOUT_SECONDS = 15
 _SOCKET_READ_TIMEOUT_SECONDS = 65
@@ -221,14 +215,7 @@ class ElcoApiClient:
     @property
     def system_type(self) -> int | None:
         """Return the controller family reported by the last Features response."""
-        response = self.last_features_response
-        data = response.get("data") if isinstance(response, dict) else None
-        plant = data.get("plant") if isinstance(data, dict) else None
-        system_type = plant.get("systemType") if isinstance(plant, dict) else None
-        try:
-            return int(system_type) if system_type is not None else None
-        except (TypeError, ValueError):
-            return None
+        return controller_system_type(self.last_features_response)
 
     def _require_supported_system(self) -> None:
         """Reject controller-family write paths that are not verified for this gateway."""
@@ -248,12 +235,18 @@ class ElcoApiClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
+    def _operation(self, path: str) -> str:
+        """Identify an endpoint without including its gateway identifier."""
+        if self.gateway_id:
+            return path.replace(f"/{self.gateway_id}", "/<gateway>")
+        return path
+
     async def async_login(self) -> None:
         """Create an authenticated R2 cookie session."""
         async with self._auth_lock:
             if self._authenticated:
                 return
-            _LOGGER.debug("Remocon R2 login for gateway %s", self.gateway_id)
+            _LOGGER.debug("Remocon R2 login started")
             try:
                 response = await self._session.get(
                     self._url(LOGIN_PATH),
@@ -296,22 +289,16 @@ class ElcoApiClient:
                 if not isinstance(payload, dict):
                     raise ElcoResponseError("Login returned an unexpected payload")
                 if not payload.get("ok"):
-                    raise ElcoAuthenticationError(
-                        str(payload.get("message") or "Wrong username or password")
-                    )
+                    raise ElcoAuthenticationError("Wrong username or password")
                 self._authenticated = True
-                _LOGGER.debug("Remocon R2 login succeeded for gateway %s", self.gateway_id)
+                _LOGGER.debug("Remocon R2 login succeeded")
             except ElcoApiError as err:
                 self._authenticated = False
-                _LOGGER.debug("Remocon R2 login failed for gateway %s: %s", self.gateway_id, err)
+                _LOGGER.debug("Remocon R2 login failed: %s", type(err).__name__)
                 raise
             except (ClientError, TimeoutError) as err:
                 self._authenticated = False
-                _LOGGER.debug(
-                    "Remocon R2 login transport failure for gateway %s: %r",
-                    self.gateway_id,
-                    err,
-                )
+                _LOGGER.debug("Remocon R2 login transport failure: %s", type(err).__name__)
                 raise ElcoConnectionError(
                     "Unable to connect to Remocon",
                     timed_out=isinstance(err, TimeoutError),
@@ -339,6 +326,15 @@ class ElcoApiClient:
             ) from err
         return payload
 
+    @staticmethod
+    def _check_response(payload: Any, operation: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        if payload.get("ok") is False or payload.get("success") is False:
+            if "communication error" in str(payload.get("message")).casefold():
+                raise ElcoResponseError("Communication error", ambiguous=True)
+            raise ElcoResponseError(f"Remocon rejected {operation}")
+
     async def _request_payload(
         self,
         method: str,
@@ -350,12 +346,8 @@ class ElcoApiClient:
     ) -> Any:
         if not self._authenticated:
             await self.async_login()
-        _LOGGER.debug(
-            "Remocon %s %s request body=%s",
-            method,
-            path,
-            "<credentials>" if path == LOGIN_PATH else _debug_payload(body),
-        )
+        operation = self._operation(path)
+        _LOGGER.debug("Remocon %s %s", method, operation)
         try:
             response = await self._session.request(
                 method,
@@ -365,30 +357,12 @@ class ElcoApiClient:
                 timeout=self._timeout,
             )
             async with response:
-                payload = await self._decode_json(response, path)
-            if isinstance(payload, dict) and payload.get("ok") is False:
-                message = str(payload.get("message") or f"{path} failed")
-                _LOGGER.debug(
-                    "Remocon %s %s -> HTTP %s rejected: %s",
-                    method,
-                    path,
-                    response.status,
-                    _debug_payload(payload),
-                )
-                raise ElcoResponseError(
-                    message,
-                    ambiguous="communication error" in message.casefold(),
-                )
-            _LOGGER.debug(
-                "Remocon %s %s -> HTTP %s payload=%s",
-                method,
-                path,
-                response.status,
-                _debug_payload(payload),
-            )
+                payload = await self._decode_json(response, operation)
+            self._check_response(payload, operation)
+            _LOGGER.debug("Remocon %s %s -> HTTP %s", method, operation, response.status)
             return payload
         except ElcoAuthenticationError:
-            _LOGGER.debug("Remocon %s %s -> authentication rejected", method, path)
+            _LOGGER.debug("Remocon %s %s -> authentication rejected", method, operation)
             if invalidate_auth:
                 self._authenticated = False
             if not retry_auth:
@@ -402,12 +376,14 @@ class ElcoApiClient:
                 invalidate_auth=invalidate_auth,
             )
         except ElcoApiError as err:
-            _LOGGER.debug("Remocon %s %s failed: %s", method, path, err)
+            _LOGGER.debug("Remocon %s %s failed: %s", method, operation, type(err).__name__)
             raise
         except (ClientError, TimeoutError) as err:
-            _LOGGER.debug("Remocon %s %s transport failure: %r", method, path, err)
+            _LOGGER.debug(
+                "Remocon %s %s transport failure: %s", method, operation, type(err).__name__
+            )
             raise ElcoConnectionError(
-                f"Unable to communicate with Remocon: {path}",
+                f"Unable to communicate with Remocon: {operation}",
                 timed_out=isinstance(err, TimeoutError),
                 retryable=_is_retryable_client_error(err),
             ) from err
@@ -428,7 +404,7 @@ class ElcoApiClient:
         )
         if not isinstance(payload, dict):
             raise ElcoResponseError(
-                f"{path} returned an unexpected payload",
+                f"{self._operation(path)} returned an unexpected payload",
                 ambiguous=True,
             )
         return payload
@@ -438,7 +414,7 @@ class ElcoApiClient:
         async with self._mobile_auth_lock:
             if self._mobile_token is not None:
                 return
-            _LOGGER.debug("Remocon mobile login for gateway %s", self.gateway_id)
+            _LOGGER.debug("Remocon mobile login started")
             try:
                 response = await self._session.post(
                     self._url(MOBILE_LOGIN_PATH),
@@ -452,25 +428,14 @@ class ElcoApiClient:
                 if not isinstance(token, str) or not token:
                     raise ElcoAuthenticationError("Mobile login did not return a token")
                 self._mobile_token = token
-                _LOGGER.debug(
-                    "Remocon mobile login succeeded for gateway %s",
-                    self.gateway_id,
-                )
+                _LOGGER.debug("Remocon mobile login succeeded")
             except ElcoApiError as err:
                 self._mobile_token = None
-                _LOGGER.debug(
-                    "Remocon mobile login failed for gateway %s: %s",
-                    self.gateway_id,
-                    err,
-                )
+                _LOGGER.debug("Remocon mobile login failed: %s", type(err).__name__)
                 raise
             except (ClientError, TimeoutError) as err:
                 self._mobile_token = None
-                _LOGGER.debug(
-                    "Remocon mobile login transport failure for gateway %s: %r",
-                    self.gateway_id,
-                    err,
-                )
+                _LOGGER.debug("Remocon mobile login transport failure: %s", type(err).__name__)
                 raise ElcoConnectionError(
                     "Unable to connect to the Remocon mobile API",
                     timed_out=isinstance(err, TimeoutError),
@@ -488,33 +453,26 @@ class ElcoApiClient:
         """Make one token-authenticated mobile API request."""
         if self._mobile_token is None:
             await self._async_mobile_login()
-        _LOGGER.debug(
-            "Remocon mobile %s %s request body=%s",
-            method,
-            path,
-            _debug_payload(body),
-        )
+        token = self._mobile_token
+        operation = self._operation(path)
+        _LOGGER.debug("Remocon mobile %s %s", method, operation)
         try:
             response = await self._session.request(
                 method,
                 self._url(path),
-                headers={**self._json_headers, "ar.authToken": self._mobile_token or ""},
+                headers={**self._json_headers, "ar.authToken": token or ""},
                 json=body,
                 timeout=self._timeout,
             )
             async with response:
-                payload = await self._decode_json(response, path)
-            _LOGGER.debug(
-                "Remocon mobile %s %s -> HTTP %s payload=%s",
-                method,
-                path,
-                response.status,
-                _debug_payload(payload),
-            )
+                payload = await self._decode_json(response, operation)
+            self._check_response(payload, operation)
+            _LOGGER.debug("Remocon mobile %s %s -> HTTP %s", method, operation, response.status)
             return payload
         except ElcoAuthenticationError:
-            _LOGGER.debug("Remocon mobile %s %s -> token rejected", method, path)
-            self._mobile_token = None
+            _LOGGER.debug("Remocon mobile %s %s -> token rejected", method, operation)
+            if self._mobile_token == token:
+                self._mobile_token = None
             if not retry_auth:
                 raise
             await self._async_mobile_login()
@@ -525,12 +483,14 @@ class ElcoApiClient:
                 retry_auth=False,
             )
         except ElcoApiError as err:
-            _LOGGER.debug("Remocon mobile %s %s failed: %s", method, path, err)
+            _LOGGER.debug("Remocon mobile %s %s failed: %s", method, operation, type(err).__name__)
             raise
         except (ClientError, TimeoutError) as err:
-            _LOGGER.debug("Remocon mobile %s %s transport failure: %r", method, path, err)
+            _LOGGER.debug(
+                "Remocon mobile %s %s transport failure: %s", method, operation, type(err).__name__
+            )
             raise ElcoConnectionError(
-                f"Unable to communicate with Remocon: {path}",
+                f"Unable to communicate with Remocon: {operation}",
                 timed_out=isinstance(err, TimeoutError),
                 retryable=_is_retryable_client_error(err),
             ) from err
@@ -584,11 +544,14 @@ class ElcoApiClient:
         ``ZoneName``; the APK sends the app language
         (``Locale.getDefault().getLanguage()``).
         """
-        items = [{"id": item_id, "zn": 0} for item_id in GALEVO_GLOBAL_DATA_ITEM_IDS]
+        galevo = self.system_type == SYSTEM_TYPE_GALEVO
+        global_ids = GALEVO_GLOBAL_DATA_ITEM_IDS if galevo else BSB_GLOBAL_DATA_ITEM_IDS
+        zone_ids = GALEVO_ZONE_DATA_ITEM_IDS if galevo else BSB_ZONE_DATA_ITEM_IDS
+        items = [{"id": item_id, "zn": 0} for item_id in global_ids]
         items.extend(
             {"id": item_id, "zn": zone_number}
             for zone_number in zone_numbers
-            for item_id in GALEVO_ZONE_DATA_ITEM_IDS
+            for item_id in zone_ids
         )
         payload = await self._request_payload(
             "POST",
@@ -597,10 +560,10 @@ class ElcoApiClient:
                 "useCache": False,
                 "items": items,
                 "features": features,
-                "culture": culture,
+                "culture": culture if galevo else "en",
             },
-            retry_auth=False,
-            invalidate_auth=False,
+            retry_auth=galevo,
+            invalidate_auth=galevo,
         )
         container = payload.get("data", payload) if isinstance(payload, dict) else payload
         if isinstance(container, list):
@@ -619,9 +582,15 @@ class ElcoApiClient:
             zone = item.get("zone", item.get("zn", 0))
             try:
                 zone_number = int(zone)
-            except (TypeError, ValueError):
-                zone_number = 0
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if item["id"] not in (global_ids if zone_number == 0 else zone_ids):
+                continue
+            if zone_number != 0 and zone_number not in zone_numbers:
+                continue
             result[f"{item['id']}:{zone_number}"] = item
+        if galevo and not result:
+            raise ElcoResponseError("Galevo system data contained no requested items")
         return result
 
     async def async_get_bsb_plant_data(self) -> dict[str, Any]:
@@ -643,7 +612,9 @@ class ElcoApiClient:
             GALEVO_ZONE_PATH.format(gateway_id=self.gateway_id, zone=zone_number),
         )
         data = payload.get("data", payload) if isinstance(payload, dict) else payload
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or not any(
+            field in data for field in ("mod", "comf", "econ", "room", "desired", "heat")
+        ):
             raise ElcoResponseError("Galevo zone data returned an unexpected payload")
         return data
 
@@ -763,19 +734,18 @@ class ElcoApiClient:
         )
 
     @staticmethod
-    def _require_galevo_writes() -> None:
+    def _require_galevo_writes(*, plant_mode: bool = False) -> None:
         """Reject Galevo writes until the master switch is enabled."""
-        if not GALEVO_WRITES_ENABLED:
-            raise ValueError(
-                "Galevo writes are disabled until the request contracts are "
-                "exercised deliberately (GALEVO_WRITES_ENABLED is off)"
-            )
+        if not (GALEVO_PLANT_MODE_WRITE_ENABLED if plant_mode else GALEVO_WRITES_ENABLED):
+            raise ValueError("Galevo writes are disabled for this control")
 
     async def _async_galevo_change_value(
         self,
         path: str,
         new_value: Any,
         old_value: Any,
+        *,
+        plant_mode: bool = False,
     ) -> Any:
         """POST a Galevo ``ChangeValueDto`` ({new, old}) request.
 
@@ -787,13 +757,7 @@ class ElcoApiClient:
         makes the server deserialize nulls (HTTP 500, or an acknowledged
         no-op as observed for plantData/mode).
         """
-        self._require_galevo_writes()
-        _LOGGER.debug(
-            "Galevo write %s new=%r old=%r",
-            path,
-            new_value,
-            old_value,
-        )
+        self._require_galevo_writes(plant_mode=plant_mode)
         payload = await self._request_mobile_payload(
             path,
             method="POST",
@@ -819,6 +783,7 @@ class ElcoApiClient:
             GALEVO_PLANT_MODE_PATH.format(gateway_id=self.gateway_id),
             mode,
             old_mode,
+            plant_mode=True,
         )
 
     async def async_set_galevo_zone_mode(
@@ -960,14 +925,12 @@ class ElcoApiClient:
         detail not yet exercised, hence ``GALEVO_WRITES_ENABLED``.
         """
         self._require_galevo_writes()
-        _LOGGER.debug(
-            "Galevo data item write id=%r zn=%r value=%r prevValue=%r prevExpiresOn=%r",
-            item.get("id"),
-            item.get("zn"),
-            value,
-            item.get("value"),
-            item.get("expiresOn") if "expiresOn" in item else "<absent>",
-        )
+        if not galevo_item_writable(item):
+            raise ValueError("Remocon did not confirm that this data item is writable")
+        options = item.get("options")
+        if isinstance(options, list) and options and value not in options:
+            raise ValueError("Value is outside the controller's allowed options")
+        NumericVariable.parse(item).validate(value)
         set_item = {
             **item,
             "value": value,
@@ -994,6 +957,10 @@ class ElcoApiClient:
         cooling: bool,
     ) -> None:
         """Galevo zone temperatures: dedicated route for heating, item set for cooling."""
+        if (cooling and zone.cooling_active is not True) or (
+            not cooling and zone.cooling_active is True
+        ):
+            raise ValueError("The requested setpoints are outside the active season")
         comfort_variable = zone.cooling_comfort_temperature if cooling else zone.comfort_temperature
         reduced_variable = zone.cooling_reduced_temperature if cooling else zone.reduced_temperature
         comfort_variable.validate(comfort)
@@ -1002,9 +969,15 @@ class ElcoApiClient:
             if comfort > reduced:
                 raise ValueError("Cooling comfort temperature cannot exceed reduced temperature")
             items = {
-                "ZoneComfortCoolingTemp": comfort,
-                "ZoneEconomyCoolingTemp": reduced,
+                key: value
+                for key, value, old in (
+                    ("ZoneComfortCoolingTemp", comfort, comfort_variable.value),
+                    ("ZoneEconomyCoolingTemp", reduced, reduced_variable.value),
+                )
+                if value != old
             }
+            if len(items) > 1:
+                raise ValueError("Change Galevo cooling setpoints one at a time")
             for item_id, new_value in items.items():
                 item = self.last_system_items.get(f"{item_id}:{zone.number}")
                 if item is None:
@@ -1023,49 +996,54 @@ class ElcoApiClient:
             old_economy=reduced_variable.value,
         )
 
-    async def _async_set_galevo_dhw(
+    async def async_set_galevo_dhw_settings(
         self,
         plant: PlantState,
         *,
-        comfort: float,
-        reduced: float,
-        mode: int,
+        comfort: float | None,
+        reduced: float | None,
+        mode: int | None,
     ) -> None:
-        """Galevo DHW: mode and temperature pair over the APK-verified routes.
-
-        The coordinator always passes the full desired state; only the
-        endpoints whose values actually changed are called.
-        """
-        plant.dhw_comfort_temperature.validate(comfort)
-        plant.dhw_reduced_temperature.validate(reduced)
-        allowed_modes = {option.value for option in plant.dhw_mode.options}
-        if allowed_modes and mode not in allowed_modes:
-            raise ValueError(f"Unsupported DHW mode: {mode}")
-        if comfort < reduced:
-            raise ValueError("DHW comfort temperature cannot be below reduced temperature")
-
-        if mode != plant.dhw_mode.value:
+        """Apply one DHW operation or setpoint command without partial updates."""
+        self._require_galevo_writes()
+        if mode is not None and mode != plant.dhw_mode.value:
+            if comfort is not None or reduced is not None:
+                raise ValueError("Change Galevo DHW mode and temperature separately")
+            if mode not in {option.value for option in plant.dhw_mode.options}:
+                raise ValueError(f"Unsupported DHW mode: {mode}")
             raw_mode = GALEVO_DHW_MODE_TO_RAW.get(mode)
             raw_current = GALEVO_DHW_MODE_TO_RAW.get(plant.dhw_mode.value)
             if raw_mode is None or raw_current is None:
                 raise ValueError(f"DHW mode {mode} has no Galevo equivalent")
             await self.async_set_galevo_dhw_mode(raw_mode, old_mode=raw_current)
+            return
+        if comfort is None and reduced is None:
+            return
+
+        if plant.dhw_mode.value == 3 and reduced is None:
+            always = plant.dhw_always_temperature
+            if always.value is None or comfort is None:
+                raise ValueError("Remocon did not return the always-active DHW setpoint")
+            always.validate(comfort)
+            if comfort != always.value:
+                await self.async_set_galevo_dhw_temp(comfort, old_temperature=always.value)
+            return
 
         old_comfort = plant.dhw_comfort_temperature.value
         old_reduced = plant.dhw_reduced_temperature.value
+        if old_comfort is None or old_reduced is None:
+            raise ValueError("Remocon did not return both scheduled DHW setpoints")
+        comfort = old_comfort if comfort is None else comfort
+        reduced = old_reduced if reduced is None else reduced
+        plant.dhw_comfort_temperature.validate(comfort)
+        plant.dhw_reduced_temperature.validate(reduced)
+        if comfort < reduced:
+            raise ValueError("DHW comfort temperature cannot be below reduced temperature")
         if comfort == old_comfort and reduced == old_reduced:
             return
-        if old_reduced is not None and old_comfort is not None:
-            await self.async_set_galevo_dhw_timeprog_temperatures(
-                comfort=comfort,
-                economy=reduced,
-                old_comfort=old_comfort,
-                old_economy=old_reduced,
-            )
-        elif old_comfort is not None:
-            await self.async_set_galevo_dhw_temp(comfort, old_temperature=old_comfort)
-        else:
-            raise ValueError("Remocon did not return the current DHW temperatures")
+        await self.async_set_galevo_dhw_timeprog_temperatures(
+            comfort=comfort, economy=reduced, old_comfort=old_comfort, old_economy=old_reduced
+        )
 
     async def async_get_galevo_consumption_sequences(self) -> list[dict[str, Any]]:
         """Fetch consumption time series (kWh) from ``consSequencesApi8``.
@@ -1080,7 +1058,9 @@ class ElcoApiClient:
             GALEVO_CONS_SEQUENCES_PATH.format(gateway_id=self.gateway_id),
         )
         data = payload.get("data", payload) if isinstance(payload, dict) else payload
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            raise ElcoResponseError("Galevo consumption reports returned an unexpected payload")
+        return [sequence for sequence in data if isinstance(sequence, dict)]
 
     async def async_get_galevo_data(
         self,
@@ -1114,9 +1094,7 @@ class ElcoApiClient:
         per-zone R2 call was therefore dropped from the poll; R2 is only
         used for Features (cached) and ``SetData`` writes.
         """
-        system_items = await self.async_get_system_items(
-            features, zone_numbers, culture=culture
-        )
+        system_items = await self.async_get_system_items(features, zone_numbers, culture=culture)
         feature_zones: dict[int, dict[str, Any]] = {}
         for zone in features.get("zones", []):
             if not isinstance(zone, dict):
@@ -1554,10 +1532,10 @@ class ElcoApiClient:
     ) -> None:
         """Write DHW temperatures and mode as one atomic command."""
         if self.system_type == SYSTEM_TYPE_GALEVO:
-            await self._async_set_galevo_dhw(
+            await self.async_set_galevo_dhw_settings(
                 plant,
-                comfort=comfort,
-                reduced=reduced,
+                comfort=comfort if comfort != plant.dhw_target_temperature.value else None,
+                reduced=reduced if reduced != plant.dhw_reduced_temperature.value else None,
                 mode=mode,
             )
             return
@@ -1590,13 +1568,14 @@ class ElcoApiClient:
         """Write a heating-zone mode while preserving required plant values."""
         if self.system_type == SYSTEM_TYPE_GALEVO:
             allowed_modes = {option.value for option in zone.mode.options}
-            if allowed_modes and mode not in allowed_modes:
+            if mode not in allowed_modes:
                 raise ValueError(f"Unsupported zone mode: {mode}")
             raw_mode = GALEVO_ZONE_MODE_TO_RAW.get(mode)
             if raw_mode is None:
                 raise ValueError(f"Zone mode {mode} has no Galevo equivalent")
-            raw_current = zone.raw.get("mod", {}).get("value")
-            old_mode = int(raw_current) if raw_current is not None else raw_mode
+            old_mode = GALEVO_ZONE_MODE_TO_RAW.get(zone.mode.value)
+            if old_mode is None:
+                raise ValueError("Remocon did not return the current zone mode")
             await self.async_set_galevo_zone_mode(
                 zone.number,
                 raw_mode,

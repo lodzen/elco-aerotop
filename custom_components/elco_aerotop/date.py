@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import dt as dt_util
 
-from .const import SYSTEM_TYPE_GALEVO
+from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
 from .holiday import current_holiday, has_holiday_source
@@ -58,12 +58,12 @@ class ElcoGalevoHolidayDate(ElcoAerotopEntity, DateEntity):
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, boundary: str) -> None:
         super().__init__(coordinator, f"holiday_{boundary}")
         self._boundary = boundary
-        self._attr_name = f"Holiday {boundary}"
+        self._attr_name = f"Pending holiday {boundary}"
         self._attr_icon = "mdi:calendar-start" if boundary == "start" else "mdi:calendar-end"
 
     @property
     @override
-    def native_value(self) -> date:
+    def native_value(self) -> date | None:
         if self._boundary == "start":
             return self.coordinator.pending_holiday_start
         return self.coordinator.pending_holiday_end
@@ -96,7 +96,8 @@ def _create_entities(
         if has_holiday_source(zone)
     ]
     if (
-        coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
+        GALEVO_WRITES_ENABLED
+        and coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
         and coordinator.data.discovery.system_item("Holiday") is not None
     ):
         entities.extend(

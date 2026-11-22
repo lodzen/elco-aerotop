@@ -29,7 +29,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install aiohttp pytest pytest-asyncio ruff
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: pytest
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked pytest tests
+
+  home-assistant-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - run: uv run --locked ty check
+      - run: uv run --locked pytest integration_tests

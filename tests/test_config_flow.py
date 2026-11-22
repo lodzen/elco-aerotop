@@ -17,6 +17,8 @@ class _StubConnectionError(Exception):
 class _StubResponseError(Exception):
     """Stand-in for ElcoResponseError inside the exec'ed function."""
 
+    status = 500
+
 
 def _extract_validate():
     source = Path(__file__).parents[1] / "custom_components/elco_aerotop/config_flow.py"
@@ -32,7 +34,7 @@ def _extract_validate():
 def _exec_validate(session):
     validate = _extract_validate()
     source = Path(__file__).parents[1] / "custom_components/elco_aerotop/config_flow.py"
-    client = SimpleNamespace(async_login=AsyncMock(), async_get_features=AsyncMock())
+    client = SimpleNamespace(async_login=AsyncMock(), async_get_features=AsyncMock(), system_type=5)
 
     def create_session(hass, *, auto_cleanup):
         assert auto_cleanup is False
@@ -45,6 +47,8 @@ def _exec_validate(session):
         "ElcoConnectionError": _StubConnectionError,
         "ElcoResponseError": _StubResponseError,
         "_LOGGER": logging.getLogger("test"),
+        "SYSTEM_TYPE_BSB": 5,
+        "SYSTEM_TYPE_GALEVO": 3,
         **{
             key: key
             for key in ("CONF_USERNAME", "CONF_PASSWORD", "CONF_GATEWAY_ID", "CONF_BASE_URL")
@@ -72,10 +76,10 @@ async def test_validation_detaches_session_without_closing_ha_connector(failure_
     try:
         if failure_stage:
             with pytest.raises(type(error)) as raised:
-                await validate(SimpleNamespace(hass=object()), user_input)
+                await validate(SimpleNamespace(hass=object()), user_input, listed=True)
             assert raised.value is error
         else:
-            await validate(SimpleNamespace(hass=object()), user_input)
+            await validate(SimpleNamespace(hass=object()), user_input, listed=True)
             client.async_get_features.assert_awaited_once_with()
         assert session.closed
         assert session.connector is None
@@ -94,7 +98,7 @@ async def test_validation_tolerates_transient_probe_errors(probe_error):
     client.async_get_features.side_effect = probe_error("HTTP 500")
 
     try:
-        await validate(SimpleNamespace(hass=object()), user_input)
+        await validate(SimpleNamespace(hass=object()), user_input, listed=True)
         client.async_login.assert_awaited_once()
         assert session.closed
         assert session.connector is None

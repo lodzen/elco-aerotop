@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -32,17 +33,26 @@ from .capabilities import supports_cooling
 from .const import (
     BSB_DISCOVERY_GROUPS,
     DOMAIN,
+    GALEVO_WRITES_ENABLED,
     MENU_ITEM_BASE_IDS,
     MENU_ITEM_CASCADE_IDS,
     MENU_ITEM_HP_IDS,
     MENU_ITEM_HYBRID_IDS,
     MENU_ITEM_SLP_IDS,
     MENU_ITEM_VMC_IDS,
+    SYSTEM_TYPE_BSB,
     SYSTEM_TYPE_GALEVO,
 )
 from .control_mapping import ZONE_MODE_AUTOMATIC
 from .holiday import current_holiday
-from .models import ElcoData, ReadOnlyDiscovery
+from .models import (
+    ElcoData,
+    ReadOnlyDiscovery,
+    SelectVariable,
+    controller_system_type,
+    galevo_item_available,
+    galevo_item_writable,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,7 +92,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             hass,
             _LOGGER,
             config_entry=entry,
-            name=f"{DOMAIN}-{api.gateway_id}",
+            name=DOMAIN,
             update_interval=timedelta(seconds=scan_interval),
             always_update=False,
         )
@@ -110,10 +120,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         self._polls_until_slow_discovery = 0
         self._initial_discovery_complete = False
         self._background_discovery_task: asyncio.Task[None] | None = None
+        self.initial_refresh_task: asyncio.Task[None] | None = None
+        self.unloading = False
         self._skip_slow_discovery_once = False
         self._transient_failure_count = 0
         self._optional_transient_failures = 0
         self._optional_retry_not_before = 0.0
+        self._gateway_retry_not_before = 0.0
         self.last_successful_update: datetime | None = None
         self._successful_update_listeners: set[Callable[[], None]] = set()
 
@@ -152,6 +165,10 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         except Exception as err:  # An optional endpoint must never disable core polling.
             status[name] = f"unavailable:{type(err).__name__}"
             _LOGGER.debug("Optional Remocon probe %s is unavailable: %s", name, err)
+            if isinstance(err, ElcoResponseError) and (
+                err.status == 429 or err.retry_after is not None
+            ):
+                self._record_gateway_backoff(err.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
             if (
                 circuit_breaker
                 and (abort_on_timeout or not isinstance(err, TimeoutError))
@@ -187,6 +204,10 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     ) -> Any:
         """Run one optional controller request without overlapping core traffic."""
         async with self._gateway_lock:
+            if remaining := self._gateway_backoff():
+                raise _OptionalDiscoveryAborted(
+                    ElcoResponseError("Remocon requested a delay", retry_after=remaining)
+                )
             return await self._async_optional_probe(
                 name,
                 request(),
@@ -231,14 +252,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
 
     def _system_type(self) -> int | None:
         """Return the controller family reported by the Features response."""
-        response = self.api.last_features_response
-        data = response.get("data") if isinstance(response, dict) else None
-        plant = data.get("plant") if isinstance(data, dict) else None
-        system_type = plant.get("systemType") if isinstance(plant, dict) else None
-        try:
-            return int(system_type) if system_type is not None else None
-        except (TypeError, ValueError):
-            return None
+        return controller_system_type(self.api.last_features_response)
 
     async def _async_refresh_core_discovery(
         self,
@@ -312,7 +326,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         status["bsb_plant_data"] = "deferred:background" if is_bsb else "unsupported:system_family"
         status["bus_devices"] = "unsupported:bsb_system" if is_bsb else "deferred:background"
         status["energy_sequences"] = "unsupported:bsb_system" if is_bsb else "deferred:background"
-        status["menu_items"] = "deferred:background"
+        status["menu_items"] = "unsupported:bsb_system" if is_bsb else "deferred:background"
 
         return ReadOnlyDiscovery(
             features=self._features,
@@ -323,12 +337,17 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             bsb_boiler_data=bsb_boiler_data,
             bus_errors=bus_errors,
             probe_status=status,
+            system_type=self._system_type(),
         )
 
     async def async_refresh_deferred_discovery(self, *, refresh_core: bool = False) -> None:
         """Refresh optional data unless a server backoff is still active."""
         loop = asyncio.get_running_loop()
-        if loop.time() < self._optional_retry_not_before:
+        if (
+            self.unloading
+            or loop.time() < self._optional_retry_not_before
+            or self._gateway_backoff()
+        ):
             return
         self._optional_transient_failures = 0
         try:
@@ -340,6 +359,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             ):
                 delay = source.retry_after or _DEFAULT_RATE_LIMIT_DELAY
                 self._optional_retry_not_before = loop.time() + delay
+                self._record_gateway_backoff(delay)
             _LOGGER.debug("Deferred Remocon discovery stopped after: %s", source)
 
     async def _async_refresh_deferred_discovery(self, *, refresh_core: bool = False) -> None:
@@ -548,22 +568,26 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 probe_status=status,
             )
             current = self.data
+            if self.unloading:
+                return
             discovery = replace(
                 self._slow_discovery,
                 system_items=current.discovery.system_items,
             )
-            self.async_set_updated_data(replace(current, discovery=discovery))
+            self.data = replace(current, discovery=discovery)
+            self.async_update_listeners()
 
     def start_deferred_discovery(self, *, refresh_core: bool = False) -> None:
         """Start one managed background discovery task if none is running."""
-        if (
+        if self.unloading or (
             self._background_discovery_task is not None
             and not self._background_discovery_task.done()
         ):
             return
         self._background_discovery_task = self.hass.async_create_background_task(
             self.async_refresh_deferred_discovery(refresh_core=refresh_core),
-            f"{DOMAIN} deferred discovery for {self.api.gateway_id}",
+            f"{DOMAIN} deferred discovery",
+            eager_start=False,
         )
 
     async def _async_cancel_deferred_discovery(self) -> None:
@@ -580,6 +604,23 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         """Cancel entry-owned discovery during unload."""
         if self._background_discovery_task is not None:
             self._background_discovery_task.cancel()
+
+    async def async_stop_background_discovery(self) -> None:
+        """Cancel and drain entry-owned work before platform unload."""
+        task = self.initial_refresh_task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        await self._async_cancel_deferred_discovery()
+
+    def _record_gateway_backoff(self, delay: float) -> None:
+        self._gateway_retry_not_before = max(
+            self._gateway_retry_not_before, asyncio.get_running_loop().time() + delay
+        )
+
+    def _gateway_backoff(self) -> float:
+        return max(0.0, self._gateway_retry_not_before - asyncio.get_running_loop().time())
 
     def _next_transient_recovery_delay(self) -> float:
         """Return a bounded recovery delay and advance the failure count."""
@@ -601,14 +642,22 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     async def _async_update_data(self) -> ElcoData:
         try:
             start_slow_discovery = False
+            refresh_core = False
             async with self._gateway_lock:
+                if self.unloading:
+                    raise UpdateFailed("The integration is unloading")
+                if remaining := self._gateway_backoff():
+                    raise UpdateFailed("Remocon requested a polling delay", retry_after=remaining)
                 if self._features is None:
                     self._features = await self.api.async_get_features()
+                system_type = self._system_type()
+                if system_type not in (None, SYSTEM_TYPE_BSB, SYSTEM_TYPE_GALEVO):
+                    raise UpdateFailed(f"Unsupported Remocon controller family ({system_type})")
                 if self._zone_numbers is None:
                     self._zone_numbers = await self.api.async_get_zone_numbers(self._features)
 
                 status = dict(self._slow_discovery.probe_status)
-                if self._system_type() == SYSTEM_TYPE_GALEVO:
+                if system_type == SYSTEM_TYPE_GALEVO:
                     data, system_items = await self.api.async_get_galevo_data(
                         self._features,
                         self._zone_numbers,
@@ -631,27 +680,31 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     if not self._initial_discovery_complete:
                         self._slow_discovery = await self._async_refresh_core_discovery(data)
                         self._initial_discovery_complete = True
+                        start_slow_discovery = True
                     else:
                         start_slow_discovery = True
+                        refresh_core = True
                     self._polls_until_slow_discovery = self._slow_discovery_poll_count - 1
                     status.update(self._slow_discovery.probe_status)
                 else:
                     self._polls_until_slow_discovery -= 1
 
+            if self.unloading:
+                raise UpdateFailed("The integration is unloading")
             discovery = replace(
                 self._slow_discovery,
                 features=self._features,
                 features_response=self.api.last_features_response,
                 system_items=system_items or {},
                 probe_status=status,
-                system_type=self._system_type(),
+                system_type=system_type,
             )
             updated_data = replace(data, discovery=discovery)
             self._transient_failure_count = 0
             self.last_successful_update = data.captured_at
             self._notify_successful_update_listeners()
             if start_slow_discovery:
-                self.start_deferred_discovery(refresh_core=True)
+                self.start_deferred_discovery(refresh_core=refresh_core)
             return updated_data
         except ElcoAuthenticationError as err:
             raise ConfigEntryAuthFailed from err
@@ -662,9 +715,11 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             ) from err
         except ElcoResponseError as err:
             if err.status == 429 or err.retry_after is not None:
+                delay = err.retry_after or _DEFAULT_RATE_LIMIT_DELAY
+                self._record_gateway_backoff(delay)
                 raise UpdateFailed(
                     str(err),
-                    retry_after=err.retry_after or _DEFAULT_RATE_LIMIT_DELAY,
+                    retry_after=delay,
                 ) from err
             if self._is_transient_response_error(err):
                 raise UpdateFailed(
@@ -677,15 +732,25 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
 
     async def _async_fresh_data(self, zone_numbers: list[int] | None = None) -> ElcoData:
         """Read uncached state for the requested zones."""
+        if self.unloading:
+            raise ElcoResponseError("The integration is unloading")
+        if remaining := self._gateway_backoff():
+            raise ElcoResponseError("Remocon requested a polling delay", retry_after=remaining)
         if self._zone_numbers is None:
             self._zone_numbers = await self.api.async_get_zone_numbers()
         requested_zones = zone_numbers or self._zone_numbers
         if self._system_type() == SYSTEM_TYPE_GALEVO:
-            data, _system_items = await self.api.async_get_galevo_data(
+            data, system_items = await self.api.async_get_galevo_data(
                 self._features or {},
                 requested_zones,
+                culture=self._culture,
             )
-            return data
+            return replace(
+                data,
+                discovery=replace(
+                    data.discovery, system_items=system_items, system_type=SYSTEM_TYPE_GALEVO
+                ),
+            )
         return await self.api.async_get_data(requested_zones, use_cache=False)
 
     async def _async_fresh_plant_data(self) -> ElcoData:
@@ -796,16 +861,21 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     async def _async_write_with_reconciliation(
         self,
         *,
-        write: Callable[[], Awaitable[None]],
+        write: Callable[[], Awaitable[Any]],
         reconcile: Callable[[], Awaitable[ElcoData]],
         matches: Callable[[ElcoData], bool],
         description: str,
+        verify_success: bool = False,
     ) -> HomeAssistantError | None:
         """Run one write and verify state instead of replaying an ambiguous failure."""
         _LOGGER.debug("Remocon write started: %s", description)
         try:
             await write()
         except (ElcoConnectionError, ElcoResponseError) as err:
+            if isinstance(err, ElcoResponseError) and (
+                err.status == 429 or err.retry_after is not None
+            ):
+                self._record_gateway_backoff(err.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
             if not self._is_ambiguous_write_error(err):
                 raise
             _LOGGER.debug(
@@ -829,10 +899,27 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 _LOGGER.debug("Confirmed %s after an ambiguous Remocon response", description)
                 return None
             return HomeAssistantError(f"{description} was not confirmed by a fresh controller read")
+        if verify_success:
+            try:
+                verified = await reconcile()
+            except ElcoApiError as err:
+                if isinstance(err, ElcoResponseError) and (
+                    err.status == 429 or err.retry_after is not None
+                ):
+                    self._record_gateway_backoff(err.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
+                raise HomeAssistantError(
+                    f"{description} was acknowledged, but the outcome could not be verified"
+                ) from err
+            if not matches(verified):
+                return HomeAssistantError(
+                    f"{description} was not confirmed by a fresh controller read"
+                )
         return None
 
     async def _async_refresh_after_write(self) -> None:
         """Refresh core state without launching optional discovery traffic."""
+        if self._gateway_backoff():
+            return
         self._skip_slow_discovery_once = True
         try:
             await self.async_request_refresh()
@@ -936,6 +1023,9 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         value: float,
     ) -> None:
         """Safely update one zone temperature while preserving its companion value."""
+        galevo = self._system_type() == SYSTEM_TYPE_GALEVO
+        if galevo and not GALEVO_WRITES_ENABLED:
+            raise HomeAssistantError("Galevo zone temperature writes are disabled in this beta")
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()
@@ -978,6 +1068,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                             f"{'Cooling' if cooling else 'Heating'} zone {zone_number} "
                             "temperature change"
                         ),
+                        verify_success=galevo,
                     )
                 await self._async_refresh_after_write()
                 if write_failure is not None:
@@ -999,6 +1090,26 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         mode: int | None = None,
     ) -> None:
         """Safely update DHW settings while preserving unchanged values."""
+        if self._system_type() == SYSTEM_TYPE_GALEVO:
+            if not GALEVO_WRITES_ENABLED:
+                raise HomeAssistantError("Galevo hot-water writes are disabled in this beta")
+
+            def matches(data: ElcoData) -> bool:
+                plant = data.plant
+                return (
+                    (comfort is None or plant.dhw_target_temperature.value == comfort)
+                    and (reduced is None or plant.dhw_reduced_temperature.value == reduced)
+                    and (mode is None or plant.dhw_mode.value == mode)
+                )
+
+            await self._async_galevo_command(
+                "Domestic hot water change",
+                lambda data: self.api.async_set_galevo_dhw_settings(
+                    data.plant, comfort=comfort, reduced=reduced, mode=mode
+                ),
+                matches,
+            )
+            return
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()
@@ -1040,133 +1151,142 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             except ElcoApiError as err:
                 raise HomeAssistantError(str(err)) from err
 
-    async def async_set_plant_mode(self, mode: int) -> None:
-        """Set the plant mode via mobile ``plantData/{gw}/mode``.
-
-        Live-verified 2026-11-19 (Winter→Summer→Winter) — the route applies
-        the mode when the ``ChangeValueDto`` uses the ``new``/``old`` wire
-        names. The R2 ``PlantHome/SetData`` contract remains documented in
-        ``docs/protocol.md`` as the alternative write path.
-        """
+    async def _async_galevo_command(
+        self,
+        description: str,
+        write: Callable[[ElcoData], Awaitable[Any]],
+        matches: Callable[[ElcoData], bool],
+        *,
+        zone_numbers: list[int] | None = None,
+    ) -> None:
+        """Validate, send and verify a Galevo command under the gateway lock."""
         if self._system_type() != SYSTEM_TYPE_GALEVO:
-            raise HomeAssistantError("Plant mode writes are only defined for Galevo gateways")
-        current = self.data.discovery.system_item("PlantMode")
-        old_mode = current.get("value") if current else None
-        if not isinstance(old_mode, int | float):
-            raise HomeAssistantError("Remocon did not return the current plant mode")
-        _LOGGER.debug(
-            "Plant mode write requested: new=%s old=%s",
-            mode,
-            old_mode,
-        )
-        try:
-            await self.api.async_set_galevo_plant_mode(mode, old_mode=int(old_mode))
-        except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
-        except ElcoAuthenticationError as err:
-            raise ConfigEntryAuthFailed from err
-        except ElcoApiError as err:
-            _LOGGER.debug("Plant mode write failed: %s", err, exc_info=True)
-            raise HomeAssistantError(str(err)) from err
-        _LOGGER.debug("Plant mode write to %s acknowledged", self.api.gateway_id)
-        await self.async_request_refresh()
+            raise HomeAssistantError("This control requires a Galevo gateway")
+        async with self._command_lock:
+            try:
+                await self._async_cancel_deferred_discovery()
+                async with self._gateway_lock:
+                    fresh = await self._async_fresh_data(zone_numbers)
+                    failure = await self._async_write_with_reconciliation(
+                        write=lambda: write(fresh),
+                        reconcile=lambda: self._async_fresh_data(zone_numbers),
+                        matches=matches,
+                        description=description,
+                        verify_success=True,
+                    )
+                await self._async_refresh_after_write()
+                if failure is not None:
+                    raise failure
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+            except ElcoAuthenticationError as err:
+                if self.config_entry is not None:
+                    self.config_entry.async_start_reauth(self.hass)
+                raise HomeAssistantError("Remocon authentication failed") from err
+            except ElcoApiError as err:
+                raise HomeAssistantError(str(err)) from err
+
+    async def async_set_plant_mode(self, mode: int) -> None:
+        """Set and verify the hardware-tested mobile plant mode command."""
+
+        async def write(data: ElcoData) -> None:
+            item = data.discovery.system_item("PlantMode")
+            if item is None or not galevo_item_writable(item):
+                raise ValueError("Remocon did not confirm that plant mode is writable")
+            current = SelectVariable.parse(item)
+            if mode not in {option.value for option in current.options}:
+                raise ValueError(f"Unsupported plant mode: {mode}")
+            if current.value is None:
+                raise ValueError("Remocon did not return the current plant mode")
+            if mode != current.value:
+                await self.api.async_set_galevo_plant_mode(mode, old_mode=current.value)
+
+        def confirmed(data: ElcoData) -> bool:
+            item = data.discovery.system_item("PlantMode")
+            return bool(
+                item and galevo_item_available(item) and SelectVariable.parse(item).value == mode
+            )
+
+        await self._async_galevo_command("Plant mode change", write, confirmed)
 
     def set_pending_holiday(self, *, start: date | None, end: date | None) -> None:
-        """Store the holiday window edited via the date entities (not sent)."""
+        """Store the local draft without changing the gateway."""
         if start is not None:
             self._pending_holiday_start = start
         if end is not None:
             self._pending_holiday_end = end
 
     @property
-    def pending_holiday_start(self) -> date:
-        return self._pending_holiday_start or date.today()
+    def pending_holiday_start(self) -> date | None:
+        return self._pending_holiday_start
 
     @property
-    def pending_holiday_end(self) -> date:
-        return self._pending_holiday_end or (date.today() + timedelta(days=7))
+    def pending_holiday_end(self) -> date | None:
+        return self._pending_holiday_end
+
+    def _local_now(self) -> datetime:
+        return datetime.now(ZoneInfo(self.hass.config.time_zone))
 
     async def async_set_galevo_holiday(self) -> None:
-        """Activate the plant holiday for the pending window.
-
-        APK contract (PlantDataProxy.setHoliday): ``ChangeValueDto`` of
-        local date-times, new=start, old=end. Gated by
-        ``GALEVO_WRITES_ENABLED`` in the API client.
-        """
-        if self._system_type() != SYSTEM_TYPE_GALEVO:
-            raise HomeAssistantError("Holiday scheduling is only defined for Galevo gateways")
+        """Activate a local draft when holiday writes have been verified."""
+        if not GALEVO_WRITES_ENABLED:
+            raise HomeAssistantError("Galevo holiday writes are disabled in this beta")
         start, end = self.pending_holiday_start, self.pending_holiday_end
-        if end < start:
-            raise HomeAssistantError("Holiday end must not precede its start")
-        _LOGGER.debug("Holiday activation requested: %s -> %s", start, end)
-        try:
-            await self.api.async_set_galevo_holiday(
-                start=f"{start.isoformat()}T00:00:00",
-                end=f"{end.isoformat()}T23:59:59",
-            )
-        except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
-        except ElcoAuthenticationError as err:
-            raise ConfigEntryAuthFailed from err
-        except ElcoApiError as err:
-            raise HomeAssistantError(str(err)) from err
-        await self.async_request_refresh()
+        if start is None or end is None:
+            raise HomeAssistantError("Set both holiday draft dates before activating")
+        if end < start or start < self._local_now().date():
+            raise HomeAssistantError("Select an ordered holiday window starting today or later")
+        start_iso = f"{start.isoformat()}T00:00:00"
+        end_iso = f"{end.isoformat()}T23:59:59"
+
+        def matches(data: ElcoData) -> bool:
+            item = data.discovery.system_item("Holiday")
+            return bool(item and item.get("value") == 1 and item.get("expiresOn") == end_iso)
+
+        await self._async_galevo_command(
+            "Holiday activation",
+            lambda _: self.api.async_set_galevo_holiday(start=start_iso, end=end_iso),
+            matches,
+        )
 
     async def async_reset_galevo_holiday(self) -> None:
-        """Cancel the plant holiday (``PlantDataProxy.resetHoliday``)."""
-        if self._system_type() != SYSTEM_TYPE_GALEVO:
-            raise HomeAssistantError("Holiday scheduling is only defined for Galevo gateways")
-        _LOGGER.debug("Holiday cancellation requested")
-        try:
-            await self.api.async_reset_galevo_holiday(
-                now=datetime.now().replace(microsecond=0).isoformat(),
-            )
-        except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
-        except ElcoAuthenticationError as err:
-            raise ConfigEntryAuthFailed from err
-        except ElcoApiError as err:
-            raise HomeAssistantError(str(err)) from err
-        await self.async_request_refresh()
-
-    async def async_set_galevo_data_item(
-        self,
-        item_key: str,
-        value: float,
-    ) -> None:
-        """Set one Galevo data item (``dataItems/{gw}/set``, APK contract).
-
-        ``item_key`` is the ``<id>:<zone>`` key in the merged system-item
-        map. Only wired for items the plant marks writable; the request
-        stays blocked by ``GALEVO_WRITES_ENABLED`` inside the API client.
-        """
-        if self._system_type() != SYSTEM_TYPE_GALEVO:
-            raise HomeAssistantError("Data item writes are only defined for Galevo gateways")
-        item = self.data.discovery.system_items.get(item_key)
-        if item is None:
-            raise HomeAssistantError(f"Data item {item_key} is not available")
-        if item.get("readOnly"):
-            raise HomeAssistantError(f"Data item {item_key} is read-only")
-        _LOGGER.debug(
-            "Data item write requested: %s value=%r (item=%r)",
-            item_key,
-            value,
-            item,
+        """Cancel a controller holiday and confirm the result."""
+        if not GALEVO_WRITES_ENABLED:
+            raise HomeAssistantError("Galevo holiday writes are disabled in this beta")
+        await self._async_galevo_command(
+            "Holiday cancellation",
+            lambda _: self.api.async_reset_galevo_holiday(
+                now=self._local_now().replace(tzinfo=None, microsecond=0).isoformat(),
+            ),
+            lambda data: data.discovery.system_value("Holiday") == 0,
         )
-        try:
+
+    async def async_set_galevo_data_item(self, item_key: str, value: float) -> None:
+        """Update a writable data item using the last observed gateway value."""
+        if not GALEVO_WRITES_ENABLED:
+            raise HomeAssistantError("Galevo data-item writes are disabled in this beta")
+
+        async def write(data: ElcoData) -> None:
+            item = data.discovery.system_items.get(item_key)
+            if item is None:
+                raise ValueError("Remocon did not return this data item")
             await self.api.async_set_galevo_data_item(item, value)
-        except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
-        except ElcoAuthenticationError as err:
-            raise ConfigEntryAuthFailed from err
-        except ElcoApiError as err:
-            _LOGGER.debug("Data item %s write failed: %s", item_key, err, exc_info=True)
-            raise HomeAssistantError(str(err)) from err
-        _LOGGER.debug("Data item %s write acknowledged", item_key)
-        await self.async_request_refresh()
+
+        await self._async_galevo_command(
+            "Data item change",
+            write,
+            lambda data: (
+                (item := data.discovery.system_items.get(item_key)) is not None
+                and galevo_item_available(item)
+                and item.get("value") == value
+            ),
+        )
 
     async def async_set_zone_mode(self, zone_number: int, mode: int) -> None:
         """Safely update a heating-zone operating mode."""
+        galevo = self._system_type() == SYSTEM_TYPE_GALEVO
+        if galevo and not GALEVO_WRITES_ENABLED:
+            raise HomeAssistantError("Galevo zone mode writes are disabled in this beta")
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()
@@ -1186,6 +1306,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                             mode,
                         ),
                         description=f"Heating zone {zone_number} mode change",
+                        verify_success=galevo,
                     )
                 await self._async_refresh_after_write()
                 if write_failure is not None:

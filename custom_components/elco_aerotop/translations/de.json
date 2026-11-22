@@ -4,11 +4,12 @@
     "step": {
       "user": {
         "title": "Mit ELCO Remocon.net verbinden",
-        "description": "Gib deine Remocon.net-Zugangsdaten ein. Dein Gateway wird automatisch erkannt.",
+        "description": "Gib deine Remocon.net-Zugangsdaten ein. Lass die Gateway-ID für die automatische Suche leer.",
         "data": {
           "username": "E-Mail",
           "password": "Passwort",
-          "base_url": "Remocon.net-URL"
+          "base_url": "Remocon.net-URL",
+          "gateway_id": "Gateway-ID"
         }
       },
       "gateway": {
@@ -30,7 +31,9 @@
       "cannot_connect": "Verbindung zu Remocon.net nicht möglich",
       "invalid_auth": "Ungültige E-Mail oder Passwort",
       "no_gateways": "Auf diesem Konto wurden keine Gateways gefunden",
-      "unknown": "Unerwarteter Fehler"
+      "unknown": "Unerwarteter Fehler",
+      "gateway_access_denied": "Das Konto hat keinen Zugriff auf dieses Gateway",
+      "unsupported_controller": "Die Reglerfamilie wird nicht unterstützt"
     },
     "abort": {
       "already_configured": "Dieses Gateway ist bereits konfiguriert",

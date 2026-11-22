@@ -2,6 +2,16 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
+## 0.4.0-beta.1
+
+- Add Galevo monitoring and verified mobile plant-mode writes. Other Galevo controls remain
+  gated pending controller testing.
+- Support a BSB gateway and a Galevo gateway side by side under a shared or separate Remocon
+  account. Add one config entry per gateway.
+- Preserve BSB entity IDs, existing settings, and typed number controls. Flow sensors recover
+  after a missing first reading.
+- Improve startup recovery, session renewal, diagnostic redaction, and server-backoff handling.
+
 ## 0.3.17
 
 - Add a read-only source outlet temperature minimum sensor (BSB line 8430), verified on the
