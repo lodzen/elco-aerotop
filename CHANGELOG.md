@@ -2,6 +2,12 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
+## 0.4.0-beta.2
+
+- Enable the Galevo scheduled hot-water comfort adjustment already verified on hardware.
+  The number appears in Time Based mode, preserves the economy setpoint, and checks both
+  settings with a fresh read after each command.
+
 ## 0.4.0-beta.1
 
 - Add Galevo monitoring and verified mobile plant-mode writes. Other Galevo controls remain

@@ -43,6 +43,7 @@ from .const import (
     GALEVO_CONS_SEQUENCES_PATH,
     GALEVO_DATA_ITEMS_SET_PATH,
     GALEVO_DHW_MODE_PATH,
+    GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED,
     GALEVO_DHW_TEMP_PATH,
     GALEVO_DHW_TIME_PROG_TEMPERATURES_PATH,
     GALEVO_GLOBAL_DATA_ITEM_IDS,
@@ -734,9 +735,9 @@ class ElcoApiClient:
         )
 
     @staticmethod
-    def _require_galevo_writes(*, plant_mode: bool = False) -> None:
-        """Reject Galevo writes until the master switch is enabled."""
-        if not (GALEVO_PLANT_MODE_WRITE_ENABLED if plant_mode else GALEVO_WRITES_ENABLED):
+    def _require_galevo_writes(*, enabled: bool | None = None) -> None:
+        """Reject a Galevo operation unless its write gate is enabled."""
+        if not (GALEVO_WRITES_ENABLED if enabled is None else enabled):
             raise ValueError("Galevo writes are disabled for this control")
 
     async def _async_galevo_change_value(
@@ -745,7 +746,7 @@ class ElcoApiClient:
         new_value: Any,
         old_value: Any,
         *,
-        plant_mode: bool = False,
+        write_enabled: bool | None = None,
     ) -> Any:
         """POST a Galevo ``ChangeValueDto`` ({new, old}) request.
 
@@ -757,7 +758,7 @@ class ElcoApiClient:
         makes the server deserialize nulls (HTTP 500, or an acknowledged
         no-op as observed for plantData/mode).
         """
-        self._require_galevo_writes(plant_mode=plant_mode)
+        self._require_galevo_writes(enabled=write_enabled)
         payload = await self._request_mobile_payload(
             path,
             method="POST",
@@ -783,7 +784,7 @@ class ElcoApiClient:
             GALEVO_PLANT_MODE_PATH.format(gateway_id=self.gateway_id),
             mode,
             old_mode,
-            plant_mode=True,
+            write_enabled=GALEVO_PLANT_MODE_WRITE_ENABLED,
         )
 
     async def async_set_galevo_zone_mode(
@@ -873,6 +874,13 @@ class ElcoApiClient:
             GALEVO_DHW_TIME_PROG_TEMPERATURES_PATH.format(gateway_id=self.gateway_id),
             {"comf": comfort, "econ": economy},
             {"comf": old_comfort, "econ": old_economy},
+            write_enabled=GALEVO_WRITES_ENABLED
+            or (
+                GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED
+                and economy == old_economy
+                and comfort >= economy
+                and all(isfinite(value) for value in (comfort, economy, old_comfort))
+            ),
         )
 
     async def async_set_galevo_holiday(

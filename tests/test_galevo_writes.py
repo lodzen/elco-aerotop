@@ -31,6 +31,7 @@ def _client(monkeypatch: pytest.MonkeyPatch | None = None) -> ElcoApiClient:
     if monkeypatch is not None:
         monkeypatch.setattr(api_module, "GALEVO_WRITES_ENABLED", False)
         monkeypatch.setattr(api_module, "GALEVO_PLANT_MODE_WRITE_ENABLED", False)
+        monkeypatch.setattr(api_module, "GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED", False)
     return ElcoApiClient(FakeSession([]), "user", "pass", "gw", "https://example.test")
 
 

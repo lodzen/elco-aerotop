@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
@@ -9,11 +11,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
 from .bsb_controls import BSB_NUMBER_CONTROL_SPECS, BsbNumberControlSpec, bsb_point_number
-from .capabilities import supports_cooling
-from .const import GALEVO_WRITES_ENABLED, SYSTEM_TYPE_GALEVO
+from .capabilities import supports_cooling, supports_scheduled_dhw_comfort_write
+from .const import (
+    GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED,
+    GALEVO_WRITES_ENABLED,
+    SYSTEM_TYPE_GALEVO,
+)
 from .coordinator import ElcoDataUpdateCoordinator
 from .entity import ElcoAerotopEntity, async_setup_platform_entities
-from .models import NumericVariable, galevo_item_writable
+from .models import ElcoData, NumericVariable, galevo_item_writable
 
 
 class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
@@ -31,12 +37,14 @@ class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
         write_fn,
         *,
         enabled_default: bool = True,
+        available_fn: Callable[[ElcoData], bool] | None = None,
     ) -> None:
         super().__init__(coordinator, key)
         self._attr_name = name
         self._attr_entity_registry_enabled_default = enabled_default
         self._variable_fn = variable_fn
         self._write_fn = write_fn
+        self._available_fn = available_fn
 
     @property
     def _variable(self) -> NumericVariable:
@@ -57,6 +65,12 @@ class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
     @property
     def native_step(self) -> float:
         return self._variable.step if self._variable.step is not None else 0.5
+
+    @property
+    def available(self) -> bool:
+        return super().available and (
+            self._available_fn is None or self._available_fn(self.coordinator.data)
+        )
 
     async def async_set_native_value(self, value: float) -> None:
         await self._write_fn(value)
@@ -207,7 +221,23 @@ def _create_entities(
 ) -> None:
     entities: list[NumberEntity] = []
     galevo = coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO
+    if (
+        galevo
+        and GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED
+        and supports_scheduled_dhw_comfort_write(coordinator.data)
+    ):
+        entities.append(
+            ElcoTemperatureNumber(
+                coordinator,
+                "dhw_scheduled_comfort_temperature",
+                "Scheduled hot water comfort temperature",
+                lambda data: data.plant.dhw_comfort_temperature,
+                coordinator.async_set_scheduled_dhw_comfort_temperature,
+                available_fn=supports_scheduled_dhw_comfort_write,
+            )
+        )
     if galevo and not GALEVO_WRITES_ENABLED:
+        async_add_entities(entities)
         return
     if coordinator.data.plant.dhw_comfort_temperature.value is not None:
         entities.append(

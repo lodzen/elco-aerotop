@@ -29,10 +29,11 @@ from .bsb_controls import (
     bsb_point_number,
     holiday_level_value,
 )
-from .capabilities import supports_cooling
+from .capabilities import supports_cooling, supports_scheduled_dhw_comfort_write
 from .const import (
     BSB_DISCOVERY_GROUPS,
     DOMAIN,
+    GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED,
     GALEVO_WRITES_ENABLED,
     MENU_ITEM_BASE_IDS,
     MENU_ITEM_CASCADE_IDS,
@@ -1208,6 +1209,35 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             )
 
         await self._async_galevo_command("Plant mode change", write, confirmed)
+
+    async def async_set_scheduled_dhw_comfort_temperature(self, value: float) -> None:
+        """Change the scheduled comfort setpoint and verify both temperatures."""
+        if not GALEVO_DHW_SCHEDULED_COMFORT_WRITE_ENABLED:
+            raise HomeAssistantError("Galevo scheduled hot-water comfort writes are disabled")
+        economy: float | None = None
+
+        async def write(data: ElcoData) -> None:
+            nonlocal economy
+            if not supports_scheduled_dhw_comfort_write(data):
+                raise ValueError("Remocon did not confirm writable Time Based hot-water settings")
+            comfort = data.plant.dhw_comfort_temperature
+            economy = data.plant.dhw_reduced_temperature.value
+            assert comfort.value is not None and economy is not None
+            comfort.validate(value)
+            if value < economy:
+                raise ValueError("Scheduled comfort temperature cannot be below economy")
+            if value != comfort.value:
+                await self.api.async_set_galevo_dhw_timeprog_temperatures(
+                    comfort=value, economy=economy, old_comfort=comfort.value, old_economy=economy
+                )
+
+        def confirmed(data: ElcoData) -> bool:
+            return (
+                data.plant.dhw_comfort_temperature.value == value
+                and data.plant.dhw_reduced_temperature.value == economy
+            )
+
+        await self._async_galevo_command("Scheduled hot-water comfort change", write, confirmed)
 
     def set_pending_holiday(self, *, start: date | None, end: date | None) -> None:
         """Store the local draft without changing the gateway."""

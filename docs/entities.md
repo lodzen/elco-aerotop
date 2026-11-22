@@ -12,8 +12,8 @@ integration uses structured Remocon JSON APIs for runtime data; it does not scra
 
 ## Galevo beta
 
-The beta includes read-only Galevo monitoring and a plant-mode select when Remocon returns
-a writable mode with valid options. The beta provides native thermostat, water-heater,
+The beta includes Galevo monitoring, a plant-mode select, and a scheduled hot-water
+comfort number when Remocon offers those writable controls. The beta provides native thermostat, water-heater,
 and holiday controls on BSB. Galevo quiet mode, boost, and holiday are monitored through
 read-only entities where available. Existing BSB entity names,
 IDs, registry settings, and typed numeric input boxes are preserved.
@@ -155,6 +155,7 @@ controller variants. This is the intentional overlap between Controls and Config
 | DHW mode | `select.<device>_domestic_hot_water_mode` | Disabled | Allowed DHW choices are returned | Read/write |
 | Zone `<zone>` mode | `select.<device>_zone_<zone>_mode` | Disabled | Allowed zone choices are returned | Read/write |
 | Plant mode | `select.<device>_plant_mode` | Enabled | Galevo advertises a valid writable `PlantMode` item with options | Mobile `plantData/{gw}/mode` with fresh state and readback |
+| Scheduled hot water comfort temperature | `number.<device>_scheduled_hot_water_comfort_temperature` | Enabled | Galevo is in Time Based mode and returns a writable comfort value with bounds and an economy value | Typed input, verified by reading back both scheduled setpoints |
 | Zone 1 holiday operating level | `select.<device>_zone_1_holiday_operating_level` | Enabled | Heating circuit 1 exists; usable when BSB line 648 is returned | Read/write |
 | Heating circuit 714 frost protection setpoint | `number.<device>_heating_circuit_frost_protection_setpoint_714` | Disabled | A zone exists; usable when BSB lines 712 and 714 are returned | Read/write |
 | Heating circuit 720 heating curve slope | `number.<device>_heating_curve_slope_720` | Disabled | A zone exists; usable when BSB line 720 is returned | Read/write |

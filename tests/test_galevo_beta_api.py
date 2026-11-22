@@ -129,6 +129,24 @@ async def test_dhw_mode_can_change_without_temperature_and_combined_changes_are_
     assert session.calls[-1][2]["json"] == {"new": 0, "old": 2}
 
 
+async def test_beta_dhw_write_allows_comfort_only_with_unchanged_economy():
+    client, session = _client(FakeResponse(json_data={"success": True}))
+    with pytest.raises(ValueError, match="disabled"):
+        await client.async_set_galevo_dhw_timeprog_temperatures(
+            comfort=52, economy=41, old_comfort=53, old_economy=40
+        )
+    assert session.calls == []
+    await client.async_set_galevo_dhw_timeprog_temperatures(
+        comfort=52, economy=40, old_comfort=53, old_economy=40
+    )
+    _, url, options = session.calls[-1]
+    assert url.endswith("/dhwTimeProgTemperatures")
+    assert options["json"] == {
+        "new": {"comf": 52, "econ": 40},
+        "old": {"comf": 53, "econ": 40},
+    }
+
+
 @pytest.mark.parametrize(
     ("overrides", "value"),
     [({"readOnly": True}, 21), ({"invalid": True}, 21), ({}, 21.25), ({}, 45), ({}, float("nan"))],

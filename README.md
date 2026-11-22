@@ -42,10 +42,9 @@ integration, so it requires internet access and a working Remocon.net account; i
 directly to the heat pump over the local network.
 
 > [!IMPORTANT]
-> Galevo support is available in **v0.4.0-beta.1**, a GitHub prerelease. The beta supports
-> Galevo monitoring and plant-mode control on compatible gateways. Other Galevo writes are
-> disabled while their controller behavior is verified. BSB retains its existing controls,
-> names, entity IDs, and numeric input boxes.
+> Galevo support is available in **v0.4.0-beta.2**, a GitHub prerelease. The beta supports
+> monitoring, plant-mode control, and the scheduled hot-water comfort setpoint on compatible
+> Galevo gateways. BSB retains its existing controls, names, entity IDs, and numeric input boxes.
 >
 > You can run BSB (`systemType: 5`) and Galevo (`systemType: 3`) in the same Home Assistant
 > instance. Each heat pump needs its own Remocon gateway and Home Assistant config entry.
@@ -58,7 +57,7 @@ directly to the heat pump over the local network.
 |---|---|
 | Monitor the system | Temperatures, pressure, flow values, operating state, and heat demand |
 | Control room heating and cooling | BSB thermostat for each supported zone, with cooling controls while Remocon reports cooling active |
-| Control hot water | BSB water-heater entity. Galevo beta reports measured and target temperatures and operation where available |
+| Control hot water | BSB water-heater entity. Galevo beta reports hot-water readings and can adjust the scheduled comfort setpoint in Time Based mode |
 | Switch the plant mode | Summer, winter, heating-only, cooling, and off modes where the gateway offers them |
 | Manage the current holiday | BSB calendar and immediate holiday controls. Galevo beta reports the controller holiday flag when available |
 | Tune heating behavior | BSB controls for holiday level, frost setpoint, heating curve, and summer/winter limit. Galevo beta reports supported quiet mode, DHW boost, and thermoregulation flags |
@@ -177,8 +176,8 @@ use the button above or:
 No custom repository setup is needed. Existing installations continue to receive
 updates through HACS without reinstalling.
 
-To try the beta, select **v0.4.0-beta.1** in the HACS version picker or download its
-[`elco_aerotop.zip` release asset](https://github.com/thomasgregg/elco-aerotop/releases/tag/v0.4.0-beta.1)
+To try the beta, select **v0.4.0-beta.2** in the HACS version picker or download its
+[`elco_aerotop.zip` release asset](https://github.com/thomasgregg/elco-aerotop/releases/tag/v0.4.0-beta.2)
 and install it manually. Restart Home Assistant and keep your existing BSB entry. Add
 the integration again to configure a Galevo gateway next to it.
 
@@ -264,7 +263,12 @@ Galevo plant mode uses the mobile `POST /api/v2/remote/plantData/{gateway}/mode`
 route with `{new, old}`. The beta refreshes the current mode and choices before sending,
 then reads back the result. A rejected request or a readback that still shows the old mode
 is reported as a failure. If a follow-up read fails after an acknowledgement, the outcome
-is reported as unknown. Other Galevo writes are disabled in this beta.
+is reported as unknown.
+
+In **Time Based** mode, the Galevo **Scheduled hot water comfort temperature** number
+appears under Configuration when the controller reports writable, bounded settings.
+The command preserves the current economy setpoint and checks both setpoints on readback.
+Use the official app for Galevo mode changes and other hot-water adjustments.
 
 Polling and optional discovery use the same gateway-traffic lock. Optional discovery releases it
 between requests so a user command can proceed without overlapping controller traffic.
@@ -410,7 +414,7 @@ different controller and gateway families.
 | Controller family | How to identify it | Current status |
 |---|---|---|
 | BSB (`systemType: 5`) | The plant URL contains `/R2/BsbPlantDashboard/Index/` and the gateway exposes `PlantHomeBsb/GetData` | Supported; available entities still depend on the capabilities and values reported by the gateway |
-| Galevo (`systemType: 3`) | The plant URL contains `/R2/Plant/Index/` | Beta monitoring and verified plant-mode writes via the mobile API |
+| Galevo (`systemType: 3`) | The plant URL contains `/R2/Plant/Index/` | Beta monitoring, plant mode, and scheduled hot-water comfort writes |
 
 Other controller families are not supported. The cloud API is undocumented and model capabilities
 vary, so formal compatibility is still being established. If the plant uses another URL or

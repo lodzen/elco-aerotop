@@ -300,10 +300,11 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 `PlantDataProxy.set*` methods (`com.remotethermo.aristonnet.data.remote.proxies`),
 `ChangeValueDto`/`TemperaturesDto`/`SetDataItemsRequest`/`SetDataItemDto` DTOs.
 
-The beta has separate flags for plant-mode writes and other Galevo writes. Plant mode is
-enabled based on the recorded hardware round trip and verified in Home Assistant with
-mocked responses. Other Galevo write entities are gated off. The experimental request
-contracts are retained for focused testing and later controller verification. BSB uses its
+The beta enables two operations with recorded hardware evidence. Plant mode uses the mobile mode
+route. The scheduled hot-water number uses `dhwTimeProgTemperatures` in Time Based mode and
+keeps `new.econ` equal to the fresh `old.econ`. The integration validates the comfort bounds and
+checks both scheduled setpoints on readback. Home Assistant regression tests use mocked
+responses for both operations. The experimental write contracts remain gated. BSB uses its
 existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):

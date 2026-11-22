@@ -54,6 +54,89 @@ def _plant_mode(value=1, *, read_only=False):
     }
 
 
+def _scheduled_dhw_items(mode=1):
+    return {
+        "DhwMode:0": {"value": mode, "options": [0, 1, 2]},
+        "DhwTimeProgComfortTemp:0": {
+            "value": 53,
+            "min": 35,
+            "max": 60,
+            "step": 1,
+            "readOnly": False,
+        },
+        "DhwTimeProgEconomyTemp:0": {"value": 40},
+    }
+
+
+@pytest.mark.parametrize("readback", ["confirmed", "unchanged", "economy_changed"])
+async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
+    hass, galevo_fixture, readback
+):
+    api, entry, items = galevo_fixture
+    items.update(_scheduled_dhw_items())
+
+    def write(*, comfort, economy, old_comfort, old_economy):
+        if readback != "unchanged":
+            items["DhwTimeProgComfortTemp:0"]["value"] = comfort
+        if readback == "economy_changed":
+            items["DhwTimeProgEconomyTemp:0"]["value"] = economy + 1
+
+    api.async_set_galevo_dhw_timeprog_temperatures.side_effect = write
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    number = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_dhw_scheduled_comfort_temperature"
+    )
+    assert hass.states.get(number).attributes["mode"] == "box"
+    assert registry.async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_dhw_mode") is None
+    assert (
+        registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_dhw_reduced_temperature")
+        is None
+    )
+    call = hass.services.async_call(
+        "number", "set_value", {"entity_id": number, "value": 52}, blocking=True
+    )
+    if readback == "confirmed":
+        await call
+        assert float(hass.states.get(number).state) == 52
+    else:
+        with pytest.raises(HomeAssistantError, match="not confirmed"):
+            await call
+    api.async_set_galevo_dhw_timeprog_temperatures.assert_awaited_once_with(
+        comfort=52, economy=40, old_comfort=53, old_economy=40
+    )
+    api.async_set_galevo_dhw_temp.assert_not_awaited()
+    api.async_set_galevo_dhw_mode.assert_not_awaited()
+
+
+async def test_scheduled_comfort_checks_fresh_mode_availability_and_bounds(hass, galevo_fixture):
+    api, entry, items = galevo_fixture
+    items.update(_scheduled_dhw_items(mode=2))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    registry = er.async_get(hass)
+    unique_id = f"{GATEWAY_ID}_dhw_scheduled_comfort_temperature"
+    assert registry.async_get_entity_id("number", DOMAIN, unique_id) is None
+    coordinator = entry.runtime_data
+    items.update(_scheduled_dhw_items())
+    await coordinator.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    number = registry.async_get_entity_id("number", DOMAIN, unique_id)
+    assert float(hass.states.get(number).state) == 53
+
+    for value, error in [(39, "below economy"), (61, "above the maximum"), (52.5, "step")]:
+        with pytest.raises(HomeAssistantError, match=error):
+            await coordinator.async_set_scheduled_dhw_comfort_temperature(value)
+    await coordinator.async_set_scheduled_dhw_comfort_temperature(53)
+    items["DhwMode:0"]["value"] = 2
+    with pytest.raises(HomeAssistantError, match="Time Based"):
+        await coordinator.async_set_scheduled_dhw_comfort_temperature(52)
+    await coordinator.async_refresh()
+    assert hass.states.get(number).state == "unavailable"
+    api.async_set_galevo_dhw_timeprog_temperatures.assert_not_awaited()
+
+
 async def test_late_capability_energy_privacy_and_beta_gates(hass, galevo_fixture):
     api, entry, items = galevo_fixture
     items["DhwTemp:0"] = {"value": 55}
