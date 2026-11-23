@@ -105,8 +105,8 @@ through `bsbPlantData` and the reviewed `PlantMenuBsb/ReadDataPoints` allowlist.
 The BSB `GetData` snapshot does not exist on Galevo plants; the endpoint returns HTTP 500 even
 after authentication. `Features` reports the controller family in `data.plant.systemType`
 (APK `eGwSystemTypeDto`: Galileo1=1, Galileo2=2, Galevo=3, Velis=4, BSB=5, AC=10). When the
-features response reports `3`, the coordinator builds plant/zone state from the mobile
-data-item and zone endpoints instead of `PlantHomeBsb`:
+features response reports `3`, the coordinator builds plant and zone state from the mobile
+data-item and zone endpoints.
 
 The core snapshot uses the mobile `dataItems/get` and zone endpoints. The optional mobile
 time-program probe uses IDs 1–6 for heating, 7 for domestic hot water, and 9–14 for cooling.
@@ -292,16 +292,22 @@ Sources: `DataItemProxy.setDataItems`, `ZoneProxy.setMode`/`setTemperatures`,
 `ChangeValueDto`/`TemperaturesDto`/`SetDataItemsRequest`/`SetDataItemDto` DTOs.
 
 Galevo supports the controls listed in the [entity guide](entities.md). Recorded hardware checks
-cover plant mode and scheduled hot-water comfort. The broader controls have Home Assistant
-regression coverage with mocked responses. Commands use a fresh read, gateway-provided limits
-where available, and serialized readback checks. Zone setpoint writes require fresh `PlantMode`
-and both values for the active season. A hardware test showed that writing a cooling comfort value
-in Winter can also change heating comfort and the effective target. The active-season requirement
-applies to the thermostat and standalone comfort and reduced controls. Hot-water writes honor
-`readOnly` and `ro` on changed setpoints. A combined hot-water request validates the destination
-setpoint before switching modes and again after confirming the mode. It reports a partial result
-when only the mode changes.
-BSB uses its existing endpoints.
+cover plant mode, scheduled hot-water comfort, and the heating thermostat setpoint. The broader
+controls have Home Assistant regression coverage with mocked responses. Commands use a fresh read,
+gateway-provided limits where available, and serialized readback checks.
+
+Zone setpoint writes require fresh `PlantMode` and both values for the active season. On one Galevo
+gateway, writing `ZoneComfortCoolingTemp` in Winter changed both `ZoneComfortTemp` and the effective
+target (`ZoneDesiredTemp`). Changing only cooling comfort in Remocon R2 also changed the value shown
+in its separate heating comfort menu. The two comfort settings are coupled on the tested gateway.
+Whether reduced setpoints are coupled is still unknown. The integration requires the active season
+for the thermostat and standalone comfort and reduced controls.
+[Original hardware report](https://github.com/thomasgregg/elco-aerotop/issues/3#issuecomment-7079412225)
+[Remocon retest](https://github.com/thomasgregg/elco-aerotop/issues/3#issuecomment-7095033094)
+
+Hot-water writes honor `readOnly` and `ro` on changed setpoints. A combined hot-water request
+validates the destination setpoint before switching modes and again after confirming the mode.
+It reports a partial result when only the mode changes. BSB uses its existing endpoints.
 
 **Verified write contract** (browser HAR, plant mode Winter→Summer):
 

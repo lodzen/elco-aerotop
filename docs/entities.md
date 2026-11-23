@@ -31,18 +31,19 @@ Home Assistant device, with entities selected from its reported capabilities.
   Configuration and Diagnostics are Home Assistant entity categories.
 - **Default** applies when an entity is first registered. Home Assistant preserves an existing
   user's enabled/disabled registry choice during upgrades.
-- **Access** is authoritative: read/write entities send commands; read-only entities never do.
+- **Access** describes the commands an entity supports when available.
 
 A **disabled** entity exists in the entity registry but is not loaded until enabled. An
-**unavailable** entity is loaded, but its backing datapoint currently has no usable value. A
-temporarily unavailable entity remains registered and can recover on a later poll.
+**unavailable** entity is loaded but currently lacks the required reading or conditions. A
+temporarily unavailable entity can recover on a later poll under the same ID.
 
 ## Testing status and how to help
 
-Automated tests cover both controller families, including their Home Assistant entities and API
-requests. The recorded Galevo hardware checks include plant-mode changes and scheduled hot-water
-comfort. Reports from more models and firmware versions help verify which other options each
-gateway exposes.
+Automated tests cover BSB and Galevo, including running both in one Home Assistant instance.
+A BSB installation passed an upgrade check from `v0.3.17`. Recorded Galevo hardware checks cover
+plant mode, scheduled hot-water comfort, the active heating thermostat, and entity availability
+after upgrading. The gateway's firmware and installed options determine which other controls
+are available. [Galevo hardware retest](https://github.com/thomasgregg/elco-aerotop/issues/3#issuecomment-7095033094)
 
 Testing is especially useful for:
 
@@ -123,23 +124,24 @@ idle activity appears only when Remocon supplies the activity flags.
 
 ### Domestic-hot-water mapping
 
-| ELCO code | ELCO meaning | HA operation | Availability |
-|---:|---|---|---|
-| 0 | Off | off | Only when returned in the allowed choices |
-| 1 | On | heat_pump | Only when returned in the allowed choices |
-| 2 | Eco | eco | Only when returned in the allowed choices |
+| Controller | Remocon mode | Home Assistant operation |
+|---|---|---|
+| BSB | Off | `off` |
+| BSB | On | `heat_pump` |
+| BSB | Eco | `eco` |
+| Galevo | Disabled | `off` |
+| Galevo | Time Based | `heat_pump` |
+| Galevo | Always active | `performance` |
 
-The target is the DHW comfort temperature. Current temperature is the storage-tank reading and is
-omitted when its probe is absent or faulty. Turn-on/off services are advertised only when both ELCO
-On and Off are supported. Mapping uses stable numeric codes returned by Remocon, not translated
-labels.
+The native water heater exposes the operations offered by the gateway using stable codes.
+An existing mode select shows the controller's labels. Turn-on and turn-off actions require
+an Off choice and a supported On choice. The current temperature comes from the storage-tank
+probe when usable.
 
-On Galevo, **Disabled**, **Time Based**, and **Always active** map to `off`, `heat_pump`,
-and `performance`. The native water heater uses these stable values. An existing mode select
-still displays the controller's labels. The water-heater target follows the selected operation.
-In Time Based mode, the controller follows its schedule. BSB uses `eco` for its separate Eco mode.
-The integration honors read-only flags on scheduled comfort, scheduled economy, and the
-always-active setpoint. The storage reading, operating mode, and target are available as sensors.
+BSB uses the comfort target. Galevo **Time Based** follows the controller's schedule and
+uses scheduled comfort and economy targets. **Always active** uses its own target. The
+integration honors read-only flags on those Galevo setpoints. Galevo also exposes separate
+sensors for the operating mode and current target.
 
 All native writes first refresh only the required current state, validate controller-provided
 limits/options, serialize commands per device, and preserve companion values required by Remocon.
@@ -181,9 +183,10 @@ For the Galevo **Holiday** switch and **Pending holiday start/end** date entitie
 The thermostat follows the current heating or cooling season, and the water heater follows the DHW
 operation. Use the standalone reduced and economy numbers to edit those separate targets.
 Previously registered controls update from the same controller readback as the native entities.
-Galevo's season-specific numbers are writable when their named season is active. Hardware testing
-showed that some Galevo gateways mirror comfort across seasons. Previously registered off-season
-comfort numbers keep their IDs and appear as unavailable.
+Galevo's season-specific numbers are writable when their named season is active. Inactive
+season-specific numbers appear as unavailable until their season becomes active. Previously
+registered off-season comfort numbers keep their IDs and stay unavailable. On the tested
+gateway, the Remocon heating and cooling comfort settings mirrored each other.
 
 Temperature numbers declare Home Assistant's temperature device class and native degrees Celsius
 unit. Zone values use Remocon limits. The reviewed BSB limits are 4–35 °C in 0.5 °C steps for line
@@ -397,10 +400,10 @@ suppress unrelated data.
 
 ### Galevo consumption reports
 
-Galevo publishes separate `sensor.<device>_energy_<usage>_<period>` readings for heating,
-hot water, and cooling when the service returns that series. The periods are the last
-24 hours, last 7 days, last complete month, and last 12 complete months. Missing buckets
-leave the affected period unavailable. These are rolling measurements in kWh.
+Galevo publishes separate energy sensors for heating, domestic hot water, and cooling
+when the service returns the corresponding series. The periods are the last 24 hours,
+last 7 days, last complete month, and last 12 complete months. Missing buckets leave the
+affected period unavailable. Each value is a windowed consumption reading in kWh.
 
 ### BSB annual records
 
@@ -481,7 +484,9 @@ or out-of-service flag affects only its corresponding child entity.
 | Situation | Result |
 |---|---|
 | Remocon explicitly reports a feature as unsupported | Related entity is not created |
-| A write value lacks a current value, limits, or allowed options needed for validation | Write entity is not created |
+| A required setpoint, limit, or allowed option is missing | The affected control is absent, unavailable, or has fewer actions until the gateway returns usable data |
+| The named season of a Galevo zone temperature number is inactive | The control is unavailable until that season becomes active |
+| An existing Galevo off-season comfort control is retired | Its entity ID is preserved and the control stays unavailable |
 | A stable capability exists but its current reading is out of service | Entity stays registered and is unavailable until recovery |
 | An optional endpoint is unsupported, unauthorized, slow, or changed | Only that family is unavailable; core entities continue |
 | Entity is disabled by default | It exists in the registry but is not loaded until enabled |

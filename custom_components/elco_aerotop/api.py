@@ -928,9 +928,8 @@ class ElcoApiClient:
         APK-verified contract (DataItemProxy.setDataItems): the body carries
         the plant's ``features`` map and ``items`` with each changed item
         echoed back in full plus ``prevValue``/``prevExpiresOn`` (optimistic
-        concurrency). ``prevExpiresOn`` is only sent when the read returned
-        an ``expiresOn`` field — its null-tolerance is the one contract
-        detail not yet exercised, hence ``GALEVO_WRITES_ENABLED``.
+        concurrency). The request includes ``prevExpiresOn`` only when the
+        read returned an ``expiresOn`` field.
         """
         self._require_galevo_writes()
         if not galevo_item_writable(item):

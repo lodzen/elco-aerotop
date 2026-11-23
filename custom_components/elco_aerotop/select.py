@@ -150,8 +150,8 @@ class ElcoGalevoItemSelect(ElcoAerotopEntity, SelectEntity):
 
     Options and labels come straight from the item's ``options``/
     ``optTexts`` pair; ``fallback_labels`` supplies names for items the
-    gateway returns without ``optTexts``. The write goes through
-    ``dataItems/{gw}/set`` and stays blocked by ``GALEVO_WRITES_ENABLED``.
+    gateway returns without ``optTexts``. Enabled controls write through
+    ``dataItems/{gw}/set``.
     """
 
     _attr_entity_category = EntityCategory.CONFIG

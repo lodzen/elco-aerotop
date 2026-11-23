@@ -1028,7 +1028,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         """Safely update one zone temperature while preserving its companion value."""
         galevo = self._system_type() == SYSTEM_TYPE_GALEVO
         if galevo and not GALEVO_WRITES_ENABLED:
-            raise HomeAssistantError("Galevo zone temperature writes are disabled in this beta")
+            raise HomeAssistantError("Galevo zone temperature writes are disabled")
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()
@@ -1093,7 +1093,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         """Safely update DHW settings while preserving unchanged values."""
         if self._system_type() == SYSTEM_TYPE_GALEVO:
             if not GALEVO_WRITES_ENABLED:
-                raise HomeAssistantError("Galevo hot-water writes are disabled in this beta")
+                raise HomeAssistantError("Galevo hot-water writes are disabled")
             await self._async_set_galevo_dhw(comfort=comfort, reduced=reduced, mode=mode)
             return
         async with self._command_lock:
@@ -1313,7 +1313,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     async def async_set_galevo_holiday(self) -> None:
         """Send a local holiday draft and confirm the controller's reported state."""
         if not GALEVO_WRITES_ENABLED:
-            raise HomeAssistantError("Galevo holiday writes are disabled in this beta")
+            raise HomeAssistantError("Galevo holiday writes are disabled")
         start, end = self.pending_holiday_start, self.pending_holiday_end
         if start is None or end is None:
             raise HomeAssistantError("Set both holiday draft dates before activating")
@@ -1355,7 +1355,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     async def async_reset_galevo_holiday(self) -> None:
         """Cancel a controller holiday and confirm the result."""
         if not GALEVO_WRITES_ENABLED:
-            raise HomeAssistantError("Galevo holiday writes are disabled in this beta")
+            raise HomeAssistantError("Galevo holiday writes are disabled")
         await self._async_galevo_command(
             "Holiday cancellation",
             lambda _: self.api.async_reset_galevo_holiday(
@@ -1367,7 +1367,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
     async def async_set_galevo_data_item(self, item_key: str, value: float) -> None:
         """Update a writable data item using the last observed gateway value."""
         if not GALEVO_WRITES_ENABLED:
-            raise HomeAssistantError("Galevo data-item writes are disabled in this beta")
+            raise HomeAssistantError("Galevo data-item writes are disabled")
 
         def matches(data: ElcoData) -> bool:
             item = data.discovery.system_items.get(item_key)
@@ -1390,7 +1390,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         """Safely update a heating-zone operating mode."""
         galevo = self._system_type() == SYSTEM_TYPE_GALEVO
         if galevo and not GALEVO_WRITES_ENABLED:
-            raise HomeAssistantError("Galevo zone mode writes are disabled in this beta")
+            raise HomeAssistantError("Galevo zone mode writes are disabled")
         async with self._command_lock:
             try:
                 await self._async_cancel_deferred_discovery()

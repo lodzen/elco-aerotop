@@ -5,7 +5,7 @@
 <h1 align="center">ELCO Aerotop for Home Assistant</h1>
 
 <p align="center">
-  A native Home Assistant integration for monitoring and controlling ELCO Aerotop heat pumps through Remocon.net.
+  A native Home Assistant integration for monitoring and controlling BSB and Galevo heat pumps through Remocon.net.
 </p>
 
 <p align="center">
@@ -49,8 +49,8 @@ directly to the heat pump over the local network.
 
 ## What you can do
 
-The table describes the current source code. Check the release notes for the features in a
-specific downloadable version.
+The first stable release with Galevo support is [v0.4.0](https://github.com/thomasgregg/elco-aerotop/releases/tag/v0.4.0).
+Available controls and readings depend on the features reported by each gateway.
 
 | Feature | BSB (`systemType: 5`) | Galevo (`systemType: 3`) |
 |---|---|---|
@@ -164,13 +164,13 @@ ELCO Aerotop is included in the HACS default repository list. With HACS installe
 use the button above or:
 
 1. Open **HACS** in Home Assistant.
-2. Search for **ELCO Aerotop** and choose **Download**. For Galevo, select a version whose release
-   notes list Galevo support.
+2. Search for **ELCO Aerotop** and choose **Download**. For Galevo, install `v0.4.0` or later.
 3. Restart Home Assistant.
 4. Continue with [Home Assistant setup](#home-assistant-setup).
 
-No custom repository setup is needed. Existing installations continue to receive
-updates through HACS without reinstalling.
+Existing BSB installations can update through HACS and restart Home Assistant. Keep the existing
+integration entry to preserve its entity IDs and enabled settings. To add a Galevo gateway
+alongside it, run the setup below for that gateway.
 
 If the version you need is unavailable in HACS, install it manually using the instructions below.
 
@@ -295,13 +295,13 @@ that was active before the holiday.
 
 The thermostat exposes `cool` when BSB reports cooling active or Galevo selects **Cooling**
 or **Cooling Only** as its plant mode. Use the Galevo plant-mode select to change the plant season.
-Galevo temperature changes require the current plant mode. Zone temperature changes also require
-both comfort and reduced values for the selected season. The thermostat's activity follows the
-controller's separate activity flags.
+Galevo zone temperature changes require the current plant mode and both comfort and reduced
+values for the selected season. The thermostat's activity follows the controller's separate
+activity flags.
 
-Season-specific zone setpoint writes require the matching active season. Some Galevo gateways
-mirror heating and cooling comfort targets, so editing an inactive target can change the live
-setpoint. Previously registered off-season controls appear as unavailable.
+Season-specific zone setpoint writes require the matching active season. On a tested Galevo
+gateway, setting cooling comfort in Remocon also changed heating comfort. Previously registered
+off-season comfort controls keep their IDs and appear as unavailable.
 
 ## Availability and refresh behavior
 
@@ -324,9 +324,8 @@ setpoint. Previously registered off-season controls appear as unavailable.
   until its first successful read.
 - Every write still checks current gateway data. Native modes come from the options the gateway
   reports for that entity.
-- Authentication expiry triggers one controlled login and request replay. A second authentication
-  rejection starts Home Assistant's reauthentication flow.
-- Rejected credentials start Home Assistant's reauthentication flow.
+- Authentication expiry triggers one controlled login and request replay. Rejected credentials
+  or a second authentication rejection start Home Assistant's reauthentication flow.
 - A complete multi-zone snapshot is accepted only when every requested zone succeeds; partial data
   from a failed attempt is discarded.
 - Core reads immediately retry once after a fast transport interruption, the controller's
@@ -388,6 +387,8 @@ allowed modes. Check diagnostics to see what the integration parsed.
 
 - Check the comfort and reduced targets. Heating comfort must be at or above reduced, while
   cooling comfort must be at or below reduced.
+- On Galevo, check the current plant mode. Use the thermostat or the matching season's reduced
+  temperature control for a zone setpoint.
 - Test a small change and verify it in the official Remocon application or on the controller.
 - Allow a few moments for the gateway and cloud to synchronize.
 - Restore the original value if the system behaves unexpectedly.
@@ -419,10 +420,8 @@ controllers. The gateway's reported capabilities determine the available feature
 | BSB (`systemType: 5`) | `/R2/BsbPlantDashboard/Index/` |
 | Galevo (`systemType: 3`) | `/R2/Plant/Index/` |
 
-Other controller families are not supported. The cloud API is undocumented and model capabilities
-vary, so formal compatibility is still being established. If the plant uses another URL or
-controller family, do not assume that setup will work solely because the appliance is branded
-Aerotop.
+Compatibility is determined by the controller family reported by Remocon. Supported features
+can vary with gateway firmware, connected probes, and installed options.
 
 When reporting a working or non-working model, include the exact Aerotop model, gateway type,
 controller family or plant URL shape, firmware version if known, number of heating zones, and which

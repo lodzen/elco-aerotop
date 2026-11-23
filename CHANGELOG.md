@@ -2,51 +2,24 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
-## 0.4.0 development history
+## 0.4.0
 
-### Active-season write protection
-
-- Restrict Galevo zone comfort and reduced writes to the active season. Hardware testing showed a
-  cooling comfort write could change the active heating target while the plant stayed in Winter.
-- Keep registered off-season numbers unavailable and prevent existing season-specific controls from
-  sending an inactive-season write.
-
-### Off-season controls and write validation
-
-- Register native controls from partial gateway data. Missing temperatures or mode options recover
-  under the same entity IDs, including after reload. Keep standalone controls for additional
-  settings, extra controller modes, and existing entity IDs.
-- Require a reported Galevo plant season and both applicable zone setpoints before enabling or
-  writing a thermostat temperature. Honor read-only Galevo hot-water setpoints, including during
-  requests that change both mode and temperature.
-- Add Galevo off-season heating and cooling comfort controls. The per-season reduced temperatures
-  can also be adjusted without changing the plant mode.
-- Document BSB and Galevo side by side, including their entity, discovery, and holiday workflows.
-
-### Full Galevo controls
-
-- Enable the Galevo controls from PR #4, including the native thermostat and water heater,
-  holiday dates and switch, quiet mode, hot-water boost, automatic thermoregulation, and
-  supported zone and flow settings.
-- Use the selected Galevo plant mode for heating and cooling targets. Keep the reported
-  activity separate and refresh state promptly after writes.
-- Validate and verify combined hot-water changes in stages, with an explicit error when
-  a mode change succeeds but the requested temperature cannot be confirmed.
-
-### Scheduled hot-water comfort
-
-- Enable the Galevo scheduled hot-water comfort adjustment already verified on hardware.
-  The number appears in Time Based mode, preserves the economy setpoint, and checks both
-  settings with a fresh read after each command.
-
-### Initial Galevo support
-
-- Add Galevo monitoring and verified mobile plant-mode writes.
-- Support a BSB gateway and a Galevo gateway side by side under a shared or separate Remocon
-  account. Add one config entry per gateway.
-- Preserve BSB entity IDs, existing settings, and typed number controls. Flow sensors recover
-  after a missing first reading.
-- Improve startup recovery, session renewal, diagnostic redaction, and server-backoff handling.
+- Add Galevo controller support alongside BSB. Set up one integration entry per gateway and run
+  both families in the same Home Assistant instance with shared or separate Remocon accounts.
+- Add Galevo monitoring, a native thermostat and water heater, plant mode, plant-wide holidays,
+  quiet mode, hot-water boost, automatic thermoregulation, and supported zone and flow settings.
+  Add Galevo consumption reports and controller diagnostics.
+- Use the selected plant mode for Galevo heating and cooling targets and the reported activity for
+  the thermostat's actual state. Accept comfort and reduced writes only for the active season.
+  Previously registered off-season comfort controls keep their IDs and stay unavailable.
+- Honor read-only hot-water targets. Check the destination target on combined mode and temperature
+  changes, and report a partial result when only the mode change is confirmed.
+- Upgrade existing BSB entries in place, preserving entity IDs, registry settings, and typed
+  temperature numbers. Existing controls recover under their entity IDs after incomplete polls.
+- Load the first gateway snapshot in the background. Improve startup recovery, session renewal,
+  diagnostic redaction, and server-backoff handling.
+- Document [BSB and Galevo capabilities](README.md#what-you-can-do), including setup, entities,
+  discovery, holidays, and the hardware findings behind the active-season restriction.
 
 ## 0.3.17
 

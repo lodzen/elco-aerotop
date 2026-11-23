@@ -1,8 +1,10 @@
 # Gateway discovery and anonymized fixtures
 
 ELCO Aerotop discovers BSB and Galevo gateways through Remocon's JSON API. It combines each
-gateway's feature flags with the values it returns. Available entities can vary by controller,
-firmware, and installed options. Registered entities can recover after a missing reading.
+gateway's feature flags with the values it returns. Each gateway has its own Home Assistant
+entry, session, and coordinator, including when two gateways share a Remocon account.
+Available entities can vary by controller, firmware, and installed options. Registered
+entities can recover after a missing reading.
 
 ## Captured data
 
