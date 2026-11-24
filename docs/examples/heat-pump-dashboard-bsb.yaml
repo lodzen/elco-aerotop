@@ -1,5 +1,5 @@
 # BSB Heating view adapted from the live dashboard. Replace all elco_example IDs.
-# Requires the Mini Graph Card and Uptime Card frontend resources.
+# Requires Mini Graph Card, Uptime Card, and Button Card.
 title: Heat pump
 views:
   - title: Heating
@@ -12,6 +12,7 @@ views:
         cards:
           - type: heading
             heading: Thermostat
+            heading_style: title
             icon: mdi:thermometer
           - type: thermostat
             entity: water_heater.elco_example_domestic_hot_water
@@ -25,10 +26,12 @@ views:
             grid_options:
               columns: 6
               rows: 4
+        column_span: 1
       - type: grid
         cards:
           - type: heading
             heading: Hot Water Temperature
+            heading_style: title
             icon: mdi:thermometer
           - type: custom:mini-graph-card
             show:
@@ -49,6 +52,7 @@ views:
         cards:
           - type: heading
             heading: Status
+            heading_style: title
             icon: mdi:list-status
           - type: entities
             entities:
@@ -63,6 +67,16 @@ views:
                 duration:
                   quantity: 2
                   unit: day
+                bar:
+                  amount: 36
+                  height: 46
+                  round: 1
+                  spacing: 4
+                color:
+                  ok: '#45C669'
+                  half: '#C6B145'
+                  ko: '#C66445'
+                  none: '#C9C9C9'
                 show:
                   average: false
                   footer: false
@@ -77,21 +91,96 @@ views:
                 duration:
                   quantity: 2
                   unit: day
+                bar:
+                  amount: 36
+                  height: 46
+                  round: 1
+                  spacing: 4
+                color:
+                  ok: '#45C669'
+                  half: '#C6B145'
+                  ko: '#C66445'
+                  none: '#C9C9C9'
                 show:
+                  title: false
+                  icon: false
                   average: false
+                  footer: false
+              - type: custom:button-card
+                show_icon: false
+                show_state: false
+                show_name: true
+                name: 80 min/bar
+                tap_action:
+                  action: none
+                hold_action:
+                  action: none
+                styles:
+                  card:
+                    - background: transparent
+                    - box-shadow: none
+                    - border: '0'
+                    - border-radius: '0'
+                    - padding: 8px 0 0
+                    - margin: '0'
+                    - overflow: visible
+                  grid:
+                    - grid-template-areas: "'n n n n' 'on changed off nodata'"
+                    - grid-template-columns: repeat(4, minmax(0, 1fr))
+                    - grid-template-rows: 16px 28px
+                    - column-gap: 6px
+                  name:
+                    - grid-area: 'n'
+                    - justify-self: start
+                    - font-size: 11px
+                    - font-weight: '600'
+                    - color: var(--secondary-text-color)
+                    - text-transform: uppercase
+                    - letter-spacing: .04em
+                  custom_fields:
+                    'on':
+                      - justify-self: start
+                    changed:
+                      - justify-self: start
+                    'off':
+                      - justify-self: start
+                    nodata:
+                      - justify-self: start
+                custom_fields:
+                  'on': >-
+                    <div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap"><span
+                    style="width:7px;height:18px;border-radius:2px;background:#45C669"></span><span>On</span></div>
+                  changed: >-
+                    <div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap"><span
+                    style="width:7px;height:18px;border-radius:2px;background:#C6B145"></span><span>Changed</span></div>
+                  'off': >-
+                    <div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap"><span
+                    style="width:7px;height:18px;border-radius:2px;background:#C66445"></span><span>Off</span></div>
+                  nodata: >-
+                    <div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap"><span
+                    style="width:7px;height:18px;border-radius:2px;background:#C9C9C9"></span><span>No data</span></div>
       - type: grid
         cards:
           - type: heading
             heading: Errors
+            heading_style: title
             icon: mdi:alert
           - type: tile
             entity: binary_sensor.elco_example_heat_pump_running
             name: Heat Pump
+            vertical: false
+            features_position: bottom
           - type: tile
             entity: binary_sensor.elco_example_gateway_online
             name: Online Status
+            vertical: false
+            features_position: bottom
           - type: tile
             entity: sensor.elco_example_last_successful_update
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
             grid_options:
               columns: 12
               rows: 1
@@ -109,12 +198,20 @@ views:
           - type: tile
             entity: sensor.elco_example_maintenance_code_1
             name: Maint. Code 1
+            vertical: false
+            features_position: bottom
           - type: tile
             entity: sensor.elco_example_maintenance_code_2
             name: Maint. Code 2
+            vertical: false
+            features_position: bottom
           - type: tile
             entity: sensor.elco_example_maintenance_priority_1
             name: Maint. Priority 1
+            vertical: false
+            features_position: bottom
           - type: tile
             entity: sensor.elco_example_maintenance_priority_2
             name: Maint. Priority 2
+            vertical: false
+            features_position: bottom

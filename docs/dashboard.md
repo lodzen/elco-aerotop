@@ -4,16 +4,21 @@ Choose the example that suits your installation.
 
 | Example | Layout and requirements |
 |---|---|
-| [BSB Heating dashboard](examples/heat-pump-dashboard-bsb.yaml) | Anonymized adaptation of the live view behind the project screenshot. Includes two thermostat dials, a three-series hot-water graph, two activity timelines, gateway status, and maintenance tiles. Uses Mini Graph Card and Uptime Card. |
+| [BSB Heating dashboard](examples/heat-pump-dashboard-bsb.yaml) | The Heating layout shown in the README screenshot. Includes thermostat dials, a three-series hot-water graph, two activity timelines with a shared legend, gateway status, and maintenance tiles. Uses Mini Graph Card, Uptime Card, and Button Card. |
 | [Native-card dashboard](examples/heat-pump-dashboard.yaml) | Uses Home Assistant's built-in cards for thermostat controls, history, status, and refresh. Works with BSB or Galevo entities where available. |
 
 ## Use the BSB Heating layout
 
-Install [Mini Graph Card](https://github.com/kalkih/mini-graph-card) and
-[Uptime Card](https://github.com/dylandoamaral/uptime-card) through HACS and reload the
-dashboard. The example keeps the original **Thermostat**, **Hot Water Temperature**,
-**Status**, and **Errors** sections. The refresh shortcut calls the integration's
-**Refresh** button. It uses placeholder entity IDs and the default dashboard styling.
+Install [Mini Graph Card](https://github.com/kalkih/mini-graph-card),
+[Uptime Card](https://github.com/dylandoamaral/uptime-card), and
+[Button Card](https://github.com/custom-cards/button-card) through HACS and reload the
+dashboard. The **Status** section shows two days in 36 bars per timeline, with a shared
+**80 min/bar** legend for **On**, **Changed**, **Off**, and **No data**. Keep the legend
+colors in sync with both timelines if you customize them. The native-card example uses
+Home Assistant's History graph for activity and has no custom card requirements.
+
+The refresh shortcut calls the integration's **Refresh** button. The example uses
+placeholder entity IDs.
 The [Shortcut card](https://www.home-assistant.io/dashboards/shortcut/) requires Home
 Assistant 2026.5 or later. On older versions, copy the refresh button from the native example.
 
