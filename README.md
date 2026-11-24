@@ -49,7 +49,7 @@ directly to the heat pump over the local network.
 
 ![ELCO Aerotop heating and hot-water dashboard in Home Assistant](docs/images/home-assistant-dashboard.png)
 
-[Set up a dashboard like this](docs/dashboard.md) · [Copy the dashboard YAML](docs/examples/heat-pump-dashboard.yaml)
+[Set up a dashboard like this](docs/dashboard.md) · [Copy the BSB Heating YAML](docs/examples/heat-pump-dashboard-bsb.yaml)
 
 ## What you can do
 
@@ -65,7 +65,7 @@ Available controls and readings depend on the features reported by each gateway.
 | **Holidays** | View holidays in a read-only zone calendar. Start, extend, or cancel the current holiday. Zone 1 offers Reduced or Frost protection. | Enter plant-wide start and end dates. Use the Holiday switch to submit or cancel the period. |
 | **Heating configuration** | Frost-protection temperature, heating-curve slope, and summer/winter limit. | Heating and cooling flow temperatures and offsets, plus automatic thermoregulation. |
 | **Quiet mode and hot-water boost** | — | Dedicated on/off switches. |
-| **Energy history** | Optional annual history for energy used and delivered, cooling, and performance factor. | Heating, hot-water, and cooling consumption for four periods, plus estimated JAZ for the previous calendar year when Remocon provides complete metering data. |
+| **Energy history** | Optional annual history for energy used and delivered, cooling, and performance factor. | Heating, hot-water, and cooling consumption for four periods, plus an estimated seasonal performance factor (SPF) for the previous calendar year when Remocon provides complete metering data. |
 | **Weekly programs** | Read-only schedule data in diagnostics. | Read-only schedule data in diagnostics. |
 | **Controller diagnostics** | Controller faults, maintenance, appliance health, and supported BSB datapoints. | Controller faults, bus device inventory, gateway signal level, and supported Remocon data items. |
 
@@ -106,14 +106,14 @@ first registered.
 
 ## Dashboard example
 
-The [dashboard guide](docs/dashboard.md) includes [ready-to-copy YAML](docs/examples/heat-pump-dashboard.yaml)
-with anonymized entity IDs, native heating and hot-water controls, graphs, gateway status, and
-manual refresh. It also shows how to add a Galevo mode and energy section or BSB maintenance and
-annual performance. Use your actual entity IDs from the Home Assistant device page.
+The [dashboard guide](docs/dashboard.md) includes the [anonymized BSB Heating view](docs/examples/heat-pump-dashboard-bsb.yaml)
+from the screenshot and a [built-in-card example](docs/examples/heat-pump-dashboard.yaml) for
+either controller family. It also shows how to add Galevo mode and energy or BSB maintenance and
+annual performance cards. Use your actual entity IDs from the Home Assistant device page.
 
 ## Annual performance
 
-Galevo's **Estimated JAZ – previous calendar year** uses Remocon's estimated heat production
+Galevo's **Estimated SPF – previous calendar year** uses Remocon's estimated heat production
 and electricity consumption for space heating and hot water. It appears after Remocon provides
 matching monthly data for a complete January–December period. BSB's **Yearly performance factor**
 comes from the controller and can be enabled under Diagnostics. See [energy-history entities](docs/entities.md#energy-history-entities)

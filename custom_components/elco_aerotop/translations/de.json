@@ -4,9 +4,9 @@
     "step": {
       "user": {
         "title": "Mit ELCO Remocon.net verbinden",
-        "description": "Gib deine Remocon.net-Zugangsdaten ein. Lass die Gateway-ID für die automatische Suche leer.",
+        "description": "Gib deine Remocon.net-Zugangsdaten ein. Wenn du die Gateway-ID leer lässt, werden die Gateways in deinem Konto automatisch gesucht.",
         "data": {
-          "username": "E-Mail",
+          "username": "E-Mail-Adresse",
           "password": "Passwort",
           "base_url": "Remocon.net-URL",
           "gateway_id": "Gateway-ID"
@@ -14,7 +14,7 @@
       },
       "gateway": {
         "title": "Gateway auswählen",
-        "description": "Auf deinem Konto wurden mehrere Gateways gefunden. Wähle das zu integrierende aus.",
+        "description": "In deinem Konto wurden mehrere Gateways gefunden. Wähle das Gateway aus, das du hinzufügen möchtest.",
         "data": {
           "gateway_id": "Gateway"
         }
@@ -22,29 +22,29 @@
       "reauth_confirm": {
         "title": "Erneut mit ELCO Remocon.net verbinden",
         "data": {
-          "username": "E-Mail",
+          "username": "E-Mail-Adresse",
           "password": "Passwort"
         }
       }
     },
     "error": {
       "cannot_connect": "Verbindung zu Remocon.net nicht möglich",
-      "invalid_auth": "Ungültige E-Mail oder Passwort",
-      "no_gateways": "Auf diesem Konto wurden keine Gateways gefunden",
+      "invalid_auth": "Ungültige E-Mail-Adresse oder ungültiges Passwort",
+      "no_gateways": "In diesem Konto wurden keine Gateways gefunden",
       "unknown": "Unerwarteter Fehler",
       "gateway_access_denied": "Das Konto hat keinen Zugriff auf dieses Gateway",
       "unsupported_controller": "Die Reglerfamilie wird nicht unterstützt"
     },
     "abort": {
       "already_configured": "Dieses Gateway ist bereits konfiguriert",
-      "no_gateways": "Auf diesem Konto wurden keine Gateways gefunden",
+      "no_gateways": "In diesem Konto wurden keine Gateways gefunden",
       "reauth_successful": "Authentifizierung erfolgreich aktualisiert"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "ELCO Aerotop-Optionen",
+        "title": "Optionen für ELCO Aerotop",
         "data": {
           "scan_interval": "Abfrageintervall in Sekunden"
         }
@@ -58,67 +58,67 @@
       "dhw_boost": { "name": "Warmwasser-Schnellaufheizung" },
       "dhw_enabled": { "name": "Warmwasserbereitung aktiviert" },
       "dhw_temperature_error": { "name": "Störung des Warmwasserfühlers" },
-      "flame_on": { "name": "Flamme aktiv" },
+      "flame_on": { "name": "Flamme brennt" },
       "gateway_online": { "name": "Gateway online" },
       "heat_pump_running": { "name": "Wärmepumpe läuft" },
       "holiday_active": { "name": "Ferienbetrieb aktiv" },
       "outside_temperature_error": { "name": "Störung des Außentemperaturfühlers" },
       "quiet_mode": { "name": "Leisemodus" },
       "resistor_on": { "name": "Zusatzheizstab aktiv" },
-      "zone_cooling_active": { "name": "Zone {zone} Kühlen aktiv" },
-      "zone_heat_request": { "name": "Zone {zone} Wärmeanforderung" },
-      "zone_heating_active": { "name": "Zone {zone} Heizen aktiv" },
-      "zone_pilot": { "name": "Zone {zone} Führungszone" },
-      "zone_room_temperature_error": { "name": "Zone {zone} Störung des Raumtemperaturfühlers" }
+      "zone_cooling_active": { "name": "Zone {zone} – Kühlbetrieb aktiv" },
+      "zone_heat_request": { "name": "Zone {zone} – Wärmeanforderung" },
+      "zone_heating_active": { "name": "Zone {zone} – Heizbetrieb aktiv" },
+      "zone_pilot": { "name": "Zone {zone} – Führungszone" },
+      "zone_room_temperature_error": { "name": "Zone {zone} – Störung des Raumtemperaturfühlers" }
     },
     "button": {
       "refresh": { "name": "Aktualisieren" },
-      "zone_cancel_holiday": { "name": "Zone {zone} Ferienbetrieb beenden" }
+      "zone_cancel_holiday": { "name": "Zone {zone} – Ferienbetrieb beenden" }
     },
     "calendar": {
-      "zone_holidays": { "name": "Zone {zone} Ferienzeiten" }
+      "zone_holidays": { "name": "Zone {zone} – Ferienzeiten" }
     },
     "climate": {
-      "zone_thermostat": { "name": "Zone {zone} Thermostat" }
+      "zone_thermostat": { "name": "Zone {zone} – Thermostat" }
     },
     "date": {
       "holiday_end": { "name": "Geplantes Ferienende" },
       "holiday_start": { "name": "Geplanter Ferienbeginn" },
-      "zone_holiday_until": { "name": "Zone {zone} Ferienbetrieb bis" }
+      "zone_holiday_until": { "name": "Zone {zone} – Ende des Ferienbetriebs" }
     },
     "number": {
       "dhw_comfort_temperature": { "name": "Warmwasser-Komforttemperatur" },
-      "dhw_reduced_temperature": { "name": "Warmwasser-Reduzierttemperatur" },
+      "dhw_reduced_temperature": { "name": "Reduzierte Warmwassertemperatur" },
       "dhw_scheduled_comfort_temperature": { "name": "Warmwasser-Komforttemperatur im Zeitprogramm" },
-      "heating_circuit_frost_protection_setpoint_714": { "name": "Heizkreis 714 Frostschutzsollwert" },
-      "heating_curve_slope_720": { "name": "Heizkreis 720 Steilheit der Heizkennlinie" },
-      "summer_winter_heating_limit_730": { "name": "Heizkreis 730 Sommer-/Winterheizgrenze" },
-      "zone_comfort_temperature": { "name": "Zone {zone} Komforttemperatur" },
-      "zone_cooling_comfort_temperature": { "name": "Zone {zone} Komforttemperatur Kühlen" },
-      "zone_cooling_flow_offset": { "name": "Zone {zone} Vorlaufkorrektur Kühlen" },
-      "zone_cooling_flow_temperature": { "name": "Zone {zone} Vorlauftemperatur Kühlen" },
-      "zone_cooling_reduced_temperature": { "name": "Zone {zone} Reduzierttemperatur Kühlen" },
-      "zone_heating_flow_offset": { "name": "Zone {zone} Vorlaufkorrektur Heizen" },
-      "zone_heating_flow_temperature": { "name": "Zone {zone} Vorlauftemperatur Heizen" },
-      "zone_off_season_cooling_comfort_temperature": { "name": "Zone {zone} Komforttemperatur außerhalb der Kühlsaison" },
-      "zone_off_season_heating_comfort_temperature": { "name": "Zone {zone} Komforttemperatur außerhalb der Heizsaison" },
-      "zone_reduced_temperature": { "name": "Zone {zone} Reduzierttemperatur" }
+      "heating_circuit_frost_protection_setpoint_714": { "name": "Heizkreis – Frostschutzsollwert (714)" },
+      "heating_curve_slope_720": { "name": "Heizkreis – Steilheit der Heizkennlinie (720)" },
+      "summer_winter_heating_limit_730": { "name": "Heizkreis – Sommer-/Winterheizgrenze (730)" },
+      "zone_comfort_temperature": { "name": "Zone {zone} – Komforttemperatur" },
+      "zone_cooling_comfort_temperature": { "name": "Zone {zone} – Komforttemperatur im Kühlbetrieb" },
+      "zone_cooling_flow_offset": { "name": "Zone {zone} – Vorlaufkorrektur im Kühlbetrieb" },
+      "zone_cooling_flow_temperature": { "name": "Zone {zone} – Vorlauftemperatur im Kühlbetrieb" },
+      "zone_cooling_reduced_temperature": { "name": "Zone {zone} – Reduzierte Temperatur im Kühlbetrieb" },
+      "zone_heating_flow_offset": { "name": "Zone {zone} – Vorlaufkorrektur im Heizbetrieb" },
+      "zone_heating_flow_temperature": { "name": "Zone {zone} – Vorlauftemperatur im Heizbetrieb" },
+      "zone_off_season_cooling_comfort_temperature": { "name": "Zone {zone} – Komforttemperatur außerhalb der Kühlsaison" },
+      "zone_off_season_heating_comfort_temperature": { "name": "Zone {zone} – Komforttemperatur außerhalb der Heizsaison" },
+      "zone_reduced_temperature": { "name": "Zone {zone} – Reduzierte Temperatur" }
     },
     "select": {
       "dhw_mode": { "name": "Warmwasser-Betriebsart" },
       "plant_mode": { "name": "Anlagenbetriebsart" },
-      "zone_holiday_operating_level": { "name": "Zone {zone} Betriebsniveau im Ferienbetrieb" },
-      "zone_mode": { "name": "Zone {zone} Betriebsart" }
+      "zone_holiday_operating_level": { "name": "Zone {zone} – Betriebsniveau im Ferienbetrieb" },
+      "zone_mode": { "name": "Zone {zone} – Betriebsart" }
     },
     "sensor": {
       "galevo_estimated_jaz": { "name": "Geschätzte Jahresarbeitszahl – Vorjahr" },
       "account_language": { "name": "Kontosprache" },
-      "annual_energy_input_cooling": { "name": "Energiejahresbilanz {slot} – Energieeinsatz Kühlen" },
-      "annual_energy_input_dhw": { "name": "Energiejahresbilanz {slot} – Energieeinsatz Warmwasser" },
-      "annual_energy_input_heating": { "name": "Energiejahresbilanz {slot} – Energieeinsatz Heizen" },
+      "annual_energy_input_cooling": { "name": "Energiejahresbilanz {slot} – Eingesetzte Energie für Kühlung" },
+      "annual_energy_input_dhw": { "name": "Energiejahresbilanz {slot} – Eingesetzte Energie für Warmwasser" },
+      "annual_energy_input_heating": { "name": "Energiejahresbilanz {slot} – Eingesetzte Energie für Heizung" },
       "annual_energy_record_date": { "name": "Energiejahresbilanz {slot} – Stichtag" },
-      "annual_heat_delivered_dhw": { "name": "Energiejahresbilanz {slot} – Abgegebene Wärme Warmwasser" },
-      "annual_heat_delivered_heating": { "name": "Energiejahresbilanz {slot} – Abgegebene Wärme Heizen" },
+      "annual_heat_delivered_dhw": { "name": "Energiejahresbilanz {slot} – Abgegebene Wärme für Warmwasser" },
+      "annual_heat_delivered_heating": { "name": "Energiejahresbilanz {slot} – Abgegebene Wärme für Heizung" },
       "annual_performance_factor": { "name": "Energiejahresbilanz {slot} – Jahresarbeitszahl" },
       "annual_refrigeration_delivered": { "name": "Energiejahresbilanz {slot} – Abgegebene Kälte" },
       "appliance_model": { "name": "Gerätemodell" },
@@ -128,31 +128,31 @@
       "automated_monitoring_hydraulic_pressure": { "name": "Zustand des Hydraulikdrucks" },
       "automated_monitoring_other": { "name": "Sonstiger Gerätezustand" },
       "automated_monitoring_refrigerant_circuit": { "name": "Zustand des Kältekreises" },
-      "buffer_comfort_cooling_temperature": { "name": "Pufferspeicher-Komforttemperatur Kühlen" },
-      "buffer_comfort_heating_temperature": { "name": "Pufferspeicher-Komforttemperatur Heizen" },
-      "buffer_control_mode": { "name": "Pufferspeicher-Regelmodus" },
-      "buffer_economy_cooling_temperature": { "name": "Pufferspeicher-Reduzierttemperatur Kühlen" },
-      "buffer_economy_heating_temperature": { "name": "Pufferspeicher-Reduzierttemperatur Heizen" },
+      "buffer_comfort_cooling_temperature": { "name": "Pufferspeicher – Komforttemperatur im Kühlbetrieb" },
+      "buffer_comfort_heating_temperature": { "name": "Pufferspeicher – Komforttemperatur im Heizbetrieb" },
+      "buffer_control_mode": { "name": "Pufferspeicher – Regelmodus" },
+      "buffer_economy_cooling_temperature": { "name": "Pufferspeicher – Reduzierte Temperatur im Kühlbetrieb" },
+      "buffer_economy_heating_temperature": { "name": "Pufferspeicher – Reduzierte Temperatur im Heizbetrieb" },
       "bus_devices": { "name": "Busgeräte" },
       "controller_clock": { "name": "Regleruhr" },
       "controller_error_count": { "name": "Anzahl der Reglerstörungen" },
-      "cooling_2_flow_setpoint": { "name": "Kühlkreis 2 Vorlaufsollwert" },
-      "cooling_2_flow_temperature": { "name": "Kühlkreis 2 Vorlauftemperatur" },
+      "cooling_2_flow_setpoint": { "name": "Kühlkreis 2 – Vorlaufsollwert" },
+      "cooling_2_flow_temperature": { "name": "Kühlkreis 2 – Vorlauftemperatur" },
       "dhw_current_temperature": { "name": "Warmwassertemperatur" },
       "dhw_operation": { "name": "Warmwasserbetrieb" },
       "dhw_target_temperature": { "name": "Warmwasser-Solltemperatur" },
-      "energy_cooling_last_12_complete_months": { "name": "Energieverbrauch Kühlen (letzte 12 vollständige Monate)" },
-      "energy_cooling_last_24_hours": { "name": "Energieverbrauch Kühlen (letzte 24 Stunden)" },
-      "energy_cooling_last_7_days": { "name": "Energieverbrauch Kühlen (letzte 7 Tage)" },
-      "energy_cooling_last_month": { "name": "Energieverbrauch Kühlen (letzter vollständiger Monat)" },
-      "energy_dhw_last_12_complete_months": { "name": "Energieverbrauch Warmwasser (letzte 12 vollständige Monate)" },
-      "energy_dhw_last_24_hours": { "name": "Energieverbrauch Warmwasser (letzte 24 Stunden)" },
-      "energy_dhw_last_7_days": { "name": "Energieverbrauch Warmwasser (letzte 7 Tage)" },
-      "energy_dhw_last_month": { "name": "Energieverbrauch Warmwasser (letzter vollständiger Monat)" },
-      "energy_heating_last_12_complete_months": { "name": "Energieverbrauch Heizen (letzte 12 vollständige Monate)" },
-      "energy_heating_last_24_hours": { "name": "Energieverbrauch Heizen (letzte 24 Stunden)" },
-      "energy_heating_last_7_days": { "name": "Energieverbrauch Heizen (letzte 7 Tage)" },
-      "energy_heating_last_month": { "name": "Energieverbrauch Heizen (letzter vollständiger Monat)" },
+      "energy_cooling_last_12_complete_months": { "name": "Energieverbrauch für Kühlung (letzte 12 vollständige Monate)" },
+      "energy_cooling_last_24_hours": { "name": "Energieverbrauch für Kühlung (letzte 24 Stunden)" },
+      "energy_cooling_last_7_days": { "name": "Energieverbrauch für Kühlung (letzte 7 Tage)" },
+      "energy_cooling_last_month": { "name": "Energieverbrauch für Kühlung (letzter vollständiger Monat)" },
+      "energy_dhw_last_12_complete_months": { "name": "Energieverbrauch für Warmwasserbereitung (letzte 12 vollständige Monate)" },
+      "energy_dhw_last_24_hours": { "name": "Energieverbrauch für Warmwasserbereitung (letzte 24 Stunden)" },
+      "energy_dhw_last_7_days": { "name": "Energieverbrauch für Warmwasserbereitung (letzte 7 Tage)" },
+      "energy_dhw_last_month": { "name": "Energieverbrauch für Warmwasserbereitung (letzter vollständiger Monat)" },
+      "energy_heating_last_12_complete_months": { "name": "Energieverbrauch für Heizung (letzte 12 vollständige Monate)" },
+      "energy_heating_last_24_hours": { "name": "Energieverbrauch für Heizung (letzte 24 Stunden)" },
+      "energy_heating_last_7_days": { "name": "Energieverbrauch für Heizung (letzte 7 Tage)" },
+      "energy_heating_last_month": { "name": "Energieverbrauch für Heizung (letzter vollständiger Monat)" },
       "gateway_firmware": { "name": "Gateway-Firmware" },
       "gateway_serial": { "name": "Gateway-Seriennummer" },
       "gateway_signal_level": { "name": "Gateway-Signalstärke" },
@@ -160,14 +160,14 @@
       "heat_pump_flow_temperature": { "name": "Wärmepumpen-Vorlauftemperatur" },
       "heat_pump_gas_temperature": { "name": "Kältemittelgastemperatur der Wärmepumpe" },
       "heat_pump_return_temperature": { "name": "Wärmepumpen-Rücklauftemperatur" },
-      "heating_circuit_comfort_setpoint_710": { "name": "Heizkreis 710 Komfortsollwert" },
+      "heating_circuit_comfort_setpoint_710": { "name": "Heizkreis – Komfortsollwert (710)" },
       "heating_circuit_flow_setpoint_temperature": { "name": "Heizkreis-Vorlaufsolltemperatur" },
       "heating_circuit_flow_temperature": { "name": "Heizkreis-Vorlauftemperatur" },
-      "heating_circuit_frost_protection_setpoint_714": { "name": "Heizkreis 714 Frostschutzsollwert" },
-      "heating_circuit_operating_mode_700": { "name": "Heizkreis 700 Betriebsart" },
+      "heating_circuit_frost_protection_setpoint_714": { "name": "Heizkreis – Frostschutzsollwert (714)" },
+      "heating_circuit_operating_mode_700": { "name": "Heizkreis – Betriebsart (700)" },
       "heating_circuit_pressure": { "name": "Heizkreisdruck" },
-      "heating_circuit_reduced_setpoint_712": { "name": "Heizkreis 712 Reduziertsollwert" },
-      "heating_curve_slope_720": { "name": "Heizkreis 720 Steilheit der Heizkennlinie" },
+      "heating_circuit_reduced_setpoint_712": { "name": "Heizkreis – Reduziertsollwert (712)" },
+      "heating_curve_slope_720": { "name": "Heizkreis – Steilheit der Heizkennlinie (720)" },
       "hot_gas_temperature": { "name": "Heißgastemperatur" },
       "last_successful_update": { "name": "Letzte erfolgreiche Aktualisierung" },
       "maintenance_code_1": { "name": "Wartungscode 1" },
@@ -186,24 +186,24 @@
       "predictive_maintenance_count": { "name": "Anzahl der Hinweise zur vorausschauenden Wartung" },
       "source_outlet_temperature": { "name": "Quellenaustrittstemperatur" },
       "source_outlet_temperature_minimum": { "name": "Minimale Quellenaustrittstemperatur" },
-      "summer_winter_heating_limit_730": { "name": "Heizkreis 730 Sommer-/Winterheizgrenze" },
+      "summer_winter_heating_limit_730": { "name": "Heizkreis – Sommer-/Winterheizgrenze (730)" },
       "weather": { "name": "Wetter" },
-      "zone_cooling_comfort_temperature": { "name": "Zone {zone} Komforttemperatur Kühlen" },
-      "zone_cooling_flow_offset": { "name": "Zone {zone} Vorlaufkorrektur Kühlen" },
-      "zone_cooling_flow_temperature": { "name": "Zone {zone} Vorlauftemperatur Kühlen" },
-      "zone_cooling_holiday_temperature": { "name": "Zone {zone} Ferientemperatur Kühlen" },
-      "zone_cooling_protection_temperature": { "name": "Zone {zone} Schutztemperatur Kühlen" },
-      "zone_cooling_reduced_temperature": { "name": "Zone {zone} Reduzierttemperatur Kühlen" },
-      "zone_derogation_temperature": { "name": "Zone {zone} temporäre Solltemperatur" },
-      "zone_desired_temperature": { "name": "Zone {zone} Solltemperatur" },
-      "zone_heating_flow_offset": { "name": "Zone {zone} Vorlaufkorrektur Heizen" },
-      "zone_heating_flow_temperature": { "name": "Zone {zone} Vorlauftemperatur Heizen" },
-      "zone_heating_holiday_temperature": { "name": "Zone {zone} Ferientemperatur Heizen" },
-      "zone_heating_protection_temperature": { "name": "Zone {zone} Schutztemperatur Heizen" },
-      "zone_holiday_operating_level": { "name": "Zone {zone} Betriebsniveau im Ferienbetrieb" },
-      "zone_mode": { "name": "Zone {zone} Betriebsart" },
-      "zone_name": { "name": "Zone {zone} Name" },
-      "zone_room_temperature": { "name": "Zone {zone} Raumtemperatur" }
+      "zone_cooling_comfort_temperature": { "name": "Zone {zone} – Komforttemperatur im Kühlbetrieb" },
+      "zone_cooling_flow_offset": { "name": "Zone {zone} – Vorlaufkorrektur im Kühlbetrieb" },
+      "zone_cooling_flow_temperature": { "name": "Zone {zone} – Vorlauftemperatur im Kühlbetrieb" },
+      "zone_cooling_holiday_temperature": { "name": "Zone {zone} – Ferientemperatur im Kühlbetrieb" },
+      "zone_cooling_protection_temperature": { "name": "Zone {zone} – Schutztemperatur im Kühlbetrieb" },
+      "zone_cooling_reduced_temperature": { "name": "Zone {zone} – Reduzierte Temperatur im Kühlbetrieb" },
+      "zone_derogation_temperature": { "name": "Zone {zone} – Vorübergehende Solltemperatur" },
+      "zone_desired_temperature": { "name": "Zone {zone} – Solltemperatur" },
+      "zone_heating_flow_offset": { "name": "Zone {zone} – Vorlaufkorrektur im Heizbetrieb" },
+      "zone_heating_flow_temperature": { "name": "Zone {zone} – Vorlauftemperatur im Heizbetrieb" },
+      "zone_heating_holiday_temperature": { "name": "Zone {zone} – Ferientemperatur im Heizbetrieb" },
+      "zone_heating_protection_temperature": { "name": "Zone {zone} – Schutztemperatur im Heizbetrieb" },
+      "zone_holiday_operating_level": { "name": "Zone {zone} – Betriebsniveau im Ferienbetrieb" },
+      "zone_mode": { "name": "Zone {zone} – Betriebsart" },
+      "zone_name": { "name": "Zone {zone} – Name" },
+      "zone_room_temperature": { "name": "Zone {zone} – Raumtemperatur" }
     },
     "switch": {
       "automatic_thermoregulation": { "name": "Automatische Temperaturregelung" },

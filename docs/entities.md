@@ -83,7 +83,7 @@ numbers, addresses, or other personal data.
 | Low-level BSB 700–730 and cooling 8786/8787 values | Diagnostics | Disabled | Controller-level troubleshooting |
 | BSB annual energy records | Diagnostics | Disabled | Fixed historical records |
 | Galevo energy consumption reports | Sensors | Enabled | Consumption over a stated time window |
-| Galevo estimated JAZ | Sensors | Enabled, when complete data is returned | Heating and hot-water performance for the previous calendar year |
+| Galevo estimated SPF | Sensors | Enabled, when complete data is returned | Heating and hot-water performance for the previous calendar year |
 
 Entity category and entity domain answer different questions. The writable holiday operating
 level is a Configuration select; its older sensor counterpart remains a read-only Diagnostic for
@@ -406,13 +406,14 @@ when the service returns the corresponding series. The periods are the last 24 h
 last 7 days, last complete month, and last 12 complete months. Missing buckets leave the
 affected period unavailable. Each value is a windowed consumption reading in kWh.
 
-### Galevo estimated yearly performance factor (JAZ)
+### Galevo estimated seasonal performance factor (SPF)
 
-**Estimated JAZ – previous calendar year** divides the total heat produced for space heating
+**Estimated SPF – previous calendar year** divides the total heat produced for space heating
 and domestic hot water by the total electricity used for those same services over January
 through December of the prior year. For example, 9,000 kWh of heat and 3,000 kWh of electricity
-give an estimated JAZ of 3.00. The ratio combines the kWh totals across all months and uses.
+give an estimated SPF of 3.00. The ratio combines the kWh totals across all months and uses.
 Its `year` attribute shows the year represented by the value. The calculation excludes cooling.
+In German, the sensor is named **Geschätzte Jahresarbeitszahl – Vorjahr**.
 
 The source is the unrounded **Energy produced** and **Electricity** data from Remocon web
 metering. These figures are Remocon estimates. Any supplemental consumption is reflected to
@@ -432,7 +433,7 @@ missing, check **Energy produced** and **Electricity** in the Remocon web portal
 previous year, then check the `metering` probe status in the integration's redacted
 diagnostics. `unavailable:incomplete_previous_year` means the response didn't contain a
 usable complete year. The [dashboard guide](dashboard.md#add-galevo-mode-and-energy) includes
-an optional JAZ tile.
+an optional SPF tile.
 
 ### BSB annual records
 

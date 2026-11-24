@@ -221,7 +221,7 @@ The R2 UI reaches several routes the app never calls (evidence: user-provided HA
   after publishing the regular discovery result, when `hasMetering` is true. The request
   has a 30-second budget including at most one web-session renewal and honors shared server
   backoff. It stores only the parsed factor and year for Galevo.
-- The JAZ input is the unrounded `asKwhRaw.histogramData` view. It uses the
+- The SPF input is the unrounded `asKwhRaw.histogramData` view. It uses the
   `PreviousYear` row in each combination of `ProducedEnergy` and `ConsumedElectricity`
   with `Heating` and `Dhw`. Each row must supply twelve matching monthly labels and
   numeric kWh values, and `oldestMonth` must reach January of the target year or earlier.

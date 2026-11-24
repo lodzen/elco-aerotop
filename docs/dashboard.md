@@ -1,20 +1,37 @@
 # Heat pump dashboard
 
-The [dashboard YAML](examples/heat-pump-dashboard.yaml) adapts the layout shown in the project
-screenshot. It uses Home Assistant's built-in Sections, Thermostat, Tile, History graph, and
-Button cards. The view puts heating and hot-water controls next to the tank-temperature
-history, heating activity, gateway status, and manual refresh. It fits three sections across
-on wide screens and stacks them on narrower screens.
+Choose the example that suits your installation.
+
+| Example | Layout and requirements |
+|---|---|
+| [BSB Heating dashboard](examples/heat-pump-dashboard-bsb.yaml) | Anonymized adaptation of the live view behind the project screenshot. Includes two thermostat dials, a three-series hot-water graph, two activity timelines, gateway status, and maintenance tiles. Uses Mini Graph Card and Uptime Card. |
+| [Native-card dashboard](examples/heat-pump-dashboard.yaml) | Uses Home Assistant's built-in cards for thermostat controls, history, status, and refresh. Works with BSB or Galevo entities where available. |
+
+## Use the BSB Heating layout
+
+Install [Mini Graph Card](https://github.com/kalkih/mini-graph-card) and
+[Uptime Card](https://github.com/dylandoamaral/uptime-card) through HACS and reload the
+dashboard. The example keeps the original **Thermostat**, **Hot Water Temperature**,
+**Status**, and **Errors** sections. The refresh shortcut calls the integration's
+**Refresh** button. It uses placeholder entity IDs and the default dashboard styling.
+The [Shortcut card](https://www.home-assistant.io/dashboards/shortcut/) requires Home
+Assistant 2026.5 or later. On older versions, copy the refresh button from the native example.
+
+In addition to the shared entities listed below, the BSB example uses **Domestic hot water
+reduced temperature**, **Zone 1 heating active**, and the two **Maintenance code** and
+**Maintenance priority** sensors. Enable the heating-active diagnostic if your gateway
+provides it. Remove any maintenance tiles or graph series the gateway lacks. The comfort line
+reads the `temperature` attribute of the water heater, and the other two lines read the tank
+sensor and reduced-temperature control.
 
 ## Add the dashboard
 
 1. In Home Assistant, go to **Settings → Dashboards → Add dashboard** and create an empty
    dashboard. Open it and select **Edit dashboard**.
-2. Open the three-dot menu and choose **Raw configuration editor**. Paste the
-   [complete YAML](examples/heat-pump-dashboard.yaml) into the new dashboard. To add the
-   view to a dashboard you already use, copy just the entry beginning with
-   `- title: Heat pump` under that dashboard's existing `views:` list. Keep the indentation
-   and choose a unique `path` for the view.
+2. Open the three-dot menu and choose **Raw configuration editor**. Paste the complete
+   YAML from your chosen example into the new dashboard. To add it as a view to a dashboard
+   you already use, copy just the item under `views:` into that dashboard's existing
+   `views:` list. Keep the indentation and choose a unique `path` for the view.
 3. Replace every `elco_example_…` reference with the corresponding **Entity ID** from
    **Settings → Devices & services → ELCO Aerotop → Devices**. Replace repeated references
    in the graph and refresh action too. For a different heating zone, use that zone's
@@ -55,7 +72,8 @@ setpoint so users can tell them apart.
 ## Add Galevo mode and energy
 
 Paste this optional section alongside the other entries under `sections:`. Keep the cards
-for entities your device exposes. Add the JAZ tile after the sensor appears on your device.
+for entities your device exposes. Add the SPF tile after the sensor appears on your device.
+If the sensor was registered when its English name used JAZ, use its existing entity ID.
 The heating and hot-water totals in the example are for a rolling window of
 12 complete months.
 
@@ -71,8 +89,8 @@ The heating and hot-water totals in the example are for a rolling window of
               - entity: sensor.elco_example_heating_energy_last_12_complete_months
               - entity: sensor.elco_example_domestic_hot_water_energy_last_12_complete_months
           - type: tile
-            name: Estimated JAZ · previous calendar year
-            entity: sensor.elco_example_estimated_jaz_previous_calendar_year
+            name: Estimated SPF · previous calendar year
+            entity: sensor.elco_example_estimated_spf_previous_calendar_year
 ```
 
 ## Add BSB maintenance and annual history

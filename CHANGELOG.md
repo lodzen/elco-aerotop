@@ -2,6 +2,13 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
+## 0.4.2
+
+- Use **Estimated SPF – previous calendar year** for the English Galevo sensor name.
+  Refine German setup and entity labels. Existing entity IDs are preserved.
+- Add an anonymized YAML example based on the live BSB Heating dashboard, including its
+  three-series hot-water graph, activity timelines, and diagnostic tiles.
+
 ## 0.4.1
 
 - Add a Galevo estimated Jahresarbeitszahl for the previous calendar year when Remocon returns

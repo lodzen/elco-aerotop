@@ -1,0 +1,120 @@
+# BSB Heating view adapted from the live dashboard. Replace all elco_example IDs.
+# Requires the Mini Graph Card and Uptime Card frontend resources.
+title: Heat pump
+views:
+  - title: Heating
+    path: heating
+    icon: mdi:hvac
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Thermostat
+            icon: mdi:thermometer
+          - type: thermostat
+            entity: water_heater.elco_example_domestic_hot_water
+            name: Hot Water
+            grid_options:
+              columns: 6
+              rows: 4
+          - type: thermostat
+            entity: climate.elco_example_zone_1_thermostat
+            name: Heating
+            grid_options:
+              columns: 6
+              rows: 4
+      - type: grid
+        cards:
+          - type: heading
+            heading: Hot Water Temperature
+            icon: mdi:thermometer
+          - type: custom:mini-graph-card
+            show:
+              name: false
+              icon: false
+            entities:
+              - entity: sensor.elco_example_domestic_hot_water_temperature
+                name: Current
+                color: green
+              - entity: water_heater.elco_example_domestic_hot_water
+                attribute: temperature
+                name: Comfort
+                color: orange
+              - entity: number.elco_example_domestic_hot_water_reduced_temperature
+                name: Reduced
+                color: blue
+      - type: grid
+        cards:
+          - type: heading
+            heading: Status
+            icon: mdi:list-status
+          - type: entities
+            entities:
+              - type: custom:uptime-card
+                entity: binary_sensor.elco_example_zone_1_heating_active
+                title_template: Heating
+                icon: mdi:radiator
+                status_adaptive_color: true
+                alias:
+                  ok: Active
+                  ko: Idle
+                duration:
+                  quantity: 2
+                  unit: day
+                show:
+                  average: false
+                  footer: false
+              - type: custom:uptime-card
+                entity: binary_sensor.elco_example_zone_1_heat_request
+                title_template: Heating request
+                icon: mdi:radiator
+                status_adaptive_color: true
+                alias:
+                  ok: Request
+                  ko: Idle
+                duration:
+                  quantity: 2
+                  unit: day
+                show:
+                  average: false
+      - type: grid
+        cards:
+          - type: heading
+            heading: Errors
+            icon: mdi:alert
+          - type: tile
+            entity: binary_sensor.elco_example_heat_pump_running
+            name: Heat Pump
+          - type: tile
+            entity: binary_sensor.elco_example_gateway_online
+            name: Online Status
+          - type: tile
+            entity: sensor.elco_example_last_successful_update
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: shortcut
+            label: Refresh heat pump status
+            icon: mdi:refresh
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.elco_example_refresh
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: tile
+            entity: sensor.elco_example_maintenance_code_1
+            name: Maint. Code 1
+          - type: tile
+            entity: sensor.elco_example_maintenance_code_2
+            name: Maint. Code 2
+          - type: tile
+            entity: sensor.elco_example_maintenance_priority_1
+            name: Maint. Priority 1
+          - type: tile
+            entity: sensor.elco_example_maintenance_priority_2
+            name: Maint. Priority 2

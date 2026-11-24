@@ -111,7 +111,7 @@
       "zone_mode": { "name": "Zone {zone} mode" }
     },
     "sensor": {
-      "galevo_estimated_jaz": { "name": "Estimated JAZ – previous calendar year" },
+      "galevo_estimated_jaz": { "name": "Estimated SPF – previous calendar year" },
       "account_language": { "name": "Account language" },
       "annual_energy_input_cooling": { "name": "Annual energy record {slot} – Energy brought in cooling" },
       "annual_energy_input_dhw": { "name": "Annual energy record {slot} – Energy brought in DHW" },

@@ -107,7 +107,11 @@ async def test_jaz_waits_for_complete_data_without_delaying_existing_sensors(has
     api.async_get_metering.side_effect = None
     await entry.runtime_data.async_refresh_deferred_discovery()
     await hass.async_block_till_done()
-    state = hass.states.get(_estimated_jaz_entity(hass))
+    entity = _estimated_jaz_entity(hass)
+    state = hass.states.get(entity)
+    assert er.async_get(hass).async_get(entity).original_name == (
+        "Estimated SPF – previous calendar year"
+    )
     assert float(state.state) == pytest.approx(1320 / 420, abs=0.005)
     assert state.attributes["year"] == 2025
     assert api.async_get_metering.await_args.kwargs["retry_auth"] is True
@@ -116,11 +120,20 @@ async def test_jaz_waits_for_complete_data_without_delaying_existing_sensors(has
 @pytest.mark.freeze_time("2026-07-01T12:00:00Z", real_asyncio=True)
 async def test_jaz_id_survives_optional_errors_reload_and_language_change(hass, galevo_metering):
     api, entry, _ = galevo_metering
+    registry = er.async_get(hass)
+    entity = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{GATEWAY_ID}_galevo_estimated_jaz",
+        config_entry=entry,
+        has_entity_name=True,
+        original_name="Estimated JAZ – previous calendar year",
+        suggested_object_id="elco_example_estimated_jaz_previous_calendar_year",
+    ).entity_id
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
-    entity = _estimated_jaz_entity(hass)
-    registry = er.async_get(hass)
-    assert registry.async_get(entity).original_name == "Estimated JAZ – previous calendar year"
+    assert _estimated_jaz_entity(hass) == entity
+    assert registry.async_get(entity).original_name == "Estimated SPF – previous calendar year"
 
     api.async_get_metering.side_effect = TimeoutError("metering timed out")
     coordinator = entry.runtime_data

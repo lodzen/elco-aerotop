@@ -1,6 +1,7 @@
 """Verify ELCO entity translations and automation compatibility."""
 
 import json
+import re
 from pathlib import Path
 
 from homeassistant.helpers import entity_registry as er
@@ -10,18 +11,44 @@ from test_lifecycle import DOMAIN, GATEWAY_ID, existing_entry, fake_gateway
 COMPONENT = Path(__file__).parents[1] / "custom_components" / DOMAIN
 
 
-def test_entity_catalogs_only_translate_display_names():
-    english = json.loads((COMPONENT / "translations/en.json").read_text())["entity"]
-    german = json.loads((COMPONENT / "translations/de.json").read_text())["entity"]
-    assert json.loads((COMPONENT / "strings.json").read_text())["entity"] == english
-    assert english.keys() == german.keys()
-    for domain, entries in english.items():
-        assert entries.keys() == german[domain].keys()
-        for key, entry in entries.items():
-            translation = german[domain][key]
-            assert entry.keys() == translation.keys() == {"name"}
-            for placeholder in ("{zone}", "{slot}"):
-                assert entry["name"].count(placeholder) == translation["name"].count(placeholder)
+def _unique_keys(pairs):
+    mapping = dict(pairs)
+    assert len(mapping) == len(pairs), "Duplicate translation key"
+    return mapping
+
+
+def _messages(catalog, path=()):
+    for key, value in catalog.items():
+        if isinstance(value, dict):
+            yield from _messages(value, (*path, key))
+        else:
+            yield (*path, key), value
+
+
+def test_translation_catalogs_cover_setup_options_and_entity_names():
+    english, german, source = (
+        json.loads((COMPONENT / file).read_text(encoding="utf-8"), object_pairs_hook=_unique_keys)
+        for file in ("translations/en.json", "translations/de.json", "strings.json")
+    )
+    assert source == english
+    originals = dict(_messages(english))
+    translations = dict(_messages(german))
+    assert translations.keys() == originals.keys()
+    for path, original in originals.items():
+        translated = translations[path]
+        assert isinstance(translated, str) and translated.strip(), path
+        assert sorted(re.findall(r"\{[^{}]+\}", original)) == sorted(
+            re.findall(r"\{[^{}]+\}", translated)
+        ), path
+        if path[0] == "entity":
+            assert path[-1] == "name", path
+
+
+def test_german_labels_match_for_shared_sensors_and_controls():
+    german = json.loads((COMPONENT / "translations/de.json").read_text(encoding="utf-8"))["entity"]
+    for left, right in (("number", "sensor"), ("select", "sensor"), ("binary_sensor", "switch")):
+        for key in german[left].keys() & german[right].keys():
+            assert german[left][key] == german[right][key], key
 
 
 async def test_bsb_locale_upgrade_preserves_registry_and_automation_targets(hass, monkeypatch):
@@ -65,7 +92,7 @@ async def test_bsb_locale_upgrade_preserves_registry_and_automation_targets(hass
     assert ids() == before
     assert registry.async_get(disabled).disabled_by is er.RegistryEntryDisabler.USER
     assert registry.async_get(thermostat).name == "My thermostat"
-    assert registry.async_get(thermostat).original_name == "Zone 1 Thermostat"
+    assert registry.async_get(thermostat).original_name == "Zone 1 – Thermostat"
     assert registry.async_get(outside).original_name == "Außentemperatur"
     assert registry.async_get(factor).original_name == "Energiejahresbilanz 1 – Jahresarbeitszahl"
     assert registry.async_get(heater).original_name == "Warmwasser"
