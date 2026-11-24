@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+import json
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -15,7 +18,12 @@ from homeassistant.helpers import entity_registry as er
 from test_lifecycle import DOMAIN, GATEWAY_ID, existing_entry, fake_gateway, make_entry
 
 from custom_components.elco_aerotop import config_flow
-from custom_components.elco_aerotop.api import ElcoConnectionError, ElcoResponseError
+from custom_components.elco_aerotop.api import (
+    ElcoApiClient,
+    ElcoAuthenticationError,
+    ElcoConnectionError,
+    ElcoResponseError,
+)
 from custom_components.elco_aerotop.diagnostics import async_get_config_entry_diagnostics
 from custom_components.elco_aerotop.models import (
     GALEVO_DHW_MODE_TO_RAW,
@@ -49,6 +57,163 @@ def galevo_fixture(hass, monkeypatch):
 
     api.async_get_galevo_data.side_effect = read
     return api, make_entry(hass), items
+
+
+@pytest.fixture
+def galevo_metering(galevo_fixture):
+    api, entry, _ = galevo_fixture
+    api.async_get_features.return_value = {
+        **api.async_get_features.return_value,
+        "hasMetering": True,
+    }
+    path = Path(__file__).parents[1] / "tests/fixtures/galevo_metering.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    api.async_get_metering.return_value = report
+    return api, entry, report
+
+
+def _estimated_jaz_entity(hass):
+    return er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"{GATEWAY_ID}_galevo_estimated_jaz"
+    )
+
+
+@pytest.mark.freeze_time("2026-07-01T12:00:00Z", real_asyncio=True)
+async def test_jaz_waits_for_complete_data_without_delaying_existing_sensors(hass, galevo_metering):
+    api, entry, report = galevo_metering
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return {**report, "oldestMonth": "February 2025"}
+
+    api.async_get_metering.side_effect = read
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        await hass.async_block_till_done()
+        energy = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{GATEWAY_ID}_energy_heating_last_12_complete_months"
+        )
+        assert float(hass.states.get(energy).state) == 12
+        assert _estimated_jaz_entity(hass) is None
+    finally:
+        release.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert _estimated_jaz_entity(hass) is None
+
+    api.async_get_metering.side_effect = None
+    await entry.runtime_data.async_refresh_deferred_discovery()
+    await hass.async_block_till_done()
+    state = hass.states.get(_estimated_jaz_entity(hass))
+    assert float(state.state) == pytest.approx(1320 / 420, abs=0.005)
+    assert state.attributes["year"] == 2025
+    assert api.async_get_metering.await_args.kwargs["retry_auth"] is True
+
+
+@pytest.mark.freeze_time("2026-07-01T12:00:00Z", real_asyncio=True)
+async def test_jaz_id_survives_optional_errors_reload_and_language_change(hass, galevo_metering):
+    api, entry, _ = galevo_metering
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    entity = _estimated_jaz_entity(hass)
+    registry = er.async_get(hass)
+    assert registry.async_get(entity).original_name == "Estimated JAZ – previous calendar year"
+
+    api.async_get_metering.side_effect = TimeoutError("metering timed out")
+    coordinator = entry.runtime_data
+    await coordinator.async_refresh_deferred_discovery()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity).state == "unavailable"
+    assert coordinator.last_update_success
+    assert coordinator.data.discovery.probe_status["metering"] == "unavailable:TimeoutError"
+
+    hass.config.language = "de"
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert _estimated_jaz_entity(hass) == entity
+    assert registry.async_get(entity).original_name == "Geschätzte Jahresarbeitszahl – Vorjahr"
+    assert hass.states.get(entity).state == "unavailable"
+
+    api.async_get_metering.side_effect = None
+    await entry.runtime_data.async_refresh_deferred_discovery()
+    await hass.async_block_till_done()
+    assert _estimated_jaz_entity(hass) == entity
+    assert float(hass.states.get(entity).state) == pytest.approx(1320 / 420, abs=0.005)
+
+
+async def test_galevo_without_metering_does_not_request_it(hass, galevo_fixture):
+    api, entry, _ = galevo_fixture
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    api.async_get_metering.assert_not_awaited()
+    assert _estimated_jaz_entity(hass) is None
+
+
+async def test_unload_cancels_metering(hass, galevo_metering):
+    api, entry, _ = galevo_metering
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def read(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    api.async_get_metering.side_effect = read
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await asyncio.wait_for(started.wait(), 5)
+    assert await asyncio.wait_for(hass.config_entries.async_unload(entry.entry_id), 5)
+    assert cancelled.is_set()
+    assert _estimated_jaz_entity(hass) is None
+
+
+@pytest.mark.freeze_time("2026-07-01T12:00:00Z", real_asyncio=True)
+async def test_metering_honors_server_backoff(hass, galevo_metering):
+    api, entry, _ = galevo_metering
+    api.async_get_metering.side_effect = ElcoResponseError(
+        "Remocon requested a delay", status=429, retry_after=120
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    assert coordinator.last_update_success
+    assert 0 < coordinator._gateway_backoff() <= 120
+    assert _estimated_jaz_entity(hass) is None
+    await coordinator.async_refresh_deferred_discovery()
+    await coordinator.async_refresh()
+    api.async_get_metering.assert_awaited_once()
+    api.async_get_galevo_data.assert_awaited_once()
+
+
+@pytest.mark.freeze_time("2026-12-31T22:59:59Z", real_asyncio=True)
+async def test_discards_metering_request_spanning_local_new_year(hass, galevo_metering, freezer):
+    api, entry, report = galevo_metering
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    entity = _estimated_jaz_entity(hass)
+    assert hass.states.get(entity).attributes["year"] == 2025
+
+    async def cross_year(*args, **kwargs):
+        freezer.move_to("2026-12-31T23:00:01Z")
+        return report
+
+    api.async_get_metering.side_effect = cross_year
+    coordinator = entry.runtime_data
+    await coordinator.async_refresh_deferred_discovery()
+    await hass.async_block_till_done()
+    assert coordinator.data.discovery.galevo_annual_metering is None
+    assert hass.states.get(entity).state == "unavailable"
+
+    api.async_get_metering.side_effect = None
+    await coordinator.async_refresh_deferred_discovery()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity).attributes["year"] == 2026
 
 
 def _plant_mode(value=1, *, read_only=False):
@@ -112,6 +277,7 @@ async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
         registry.async_get_entity_id("number", DOMAIN, f"{GATEWAY_ID}_dhw_reduced_temperature")
         is not None
     )
+    api.async_get_galevo_data.reset_mock()
     call = hass.services.async_call(
         "number", "set_value", {"entity_id": number, "value": 52}, blocking=True
     )
@@ -126,6 +292,7 @@ async def test_beta_scheduled_hot_water_number_verifies_both_setpoints(
     )
     api.async_set_galevo_dhw_temp.assert_not_awaited()
     api.async_set_galevo_dhw_mode.assert_not_awaited()
+    assert api.async_get_galevo_data.await_count == (2 if readback == "confirmed" else 3)
 
 
 async def test_scheduled_comfort_checks_fresh_mode_availability_and_bounds(hass, galevo_fixture):
@@ -294,6 +461,7 @@ async def test_plant_mode_locks_and_reports_unconfirmed_changes(hass, galevo_fix
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     coordinator = entry.runtime_data
+    api.async_get_galevo_data.reset_mock()
     api.async_set_galevo_plant_mode.side_effect = error
     async with coordinator._gateway_lock:
         command = asyncio.create_task(coordinator.async_set_plant_mode(0))
@@ -303,6 +471,144 @@ async def test_plant_mode_locks_and_reports_unconfirmed_changes(hass, galevo_fix
         await command
     api.async_set_galevo_plant_mode.assert_awaited_once_with(0, old_mode=1)
     assert coordinator.data.discovery.system_value("PlantMode") == 1
+    assert api.async_get_galevo_data.await_count == (3 if error is None else 1)
+
+
+@pytest.mark.parametrize("confirm_on_read", [2, 3], ids=["immediate", "late"])
+async def test_plant_mode_publishes_the_confirming_snapshot(hass, galevo_fixture, confirm_on_read):
+    api, entry, items = galevo_fixture
+    items["PlantMode:0"] = _plant_mode()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    previous = coordinator.data
+    api.async_get_galevo_data.reset_mock()
+    read_snapshot = api.async_get_galevo_data.side_effect
+
+    def read(*args, **kwargs):
+        if api.async_get_galevo_data.await_count == confirm_on_read:
+            items["PlantMode:0"] = _plant_mode(value=0)
+        return read_snapshot(*args, **kwargs)
+
+    api.async_get_galevo_data.side_effect = read
+    select_id = er.async_get(hass).async_get_entity_id("select", DOMAIN, f"{GATEWAY_ID}_plant_mode")
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": select_id, "option": "Summer"}, blocking=True
+    )
+
+    api.async_set_galevo_plant_mode.assert_awaited_once_with(0, old_mode=1)
+    assert api.async_get_galevo_data.await_count == confirm_on_read
+    assert hass.states.get(select_id).state == "Summer"
+    assert coordinator.data.discovery.probe_status["system_items"] == "available"
+    assert coordinator.data.discovery.bus_devices == previous.discovery.bus_devices
+    assert coordinator.last_successful_update == coordinator.data.captured_at
+    assert coordinator.last_successful_update > previous.captured_at
+
+
+async def test_consecutive_plant_mode_commands_publish_complete_multizone_snapshots(
+    hass, galevo_fixture
+):
+    api, entry, items = galevo_fixture
+    items["PlantMode:0"] = _plant_mode()
+    api.async_get_zone_numbers.return_value = [1, 2]
+    before_first_confirmation = asyncio.Event()
+    release_first_confirmation = asyncio.Event()
+    read_snapshot = api.async_get_galevo_data.side_effect
+
+    async def read(features, zones, *, culture, allow_partial_zones=False):
+        assert zones == [1, 2]
+        if api.async_get_galevo_data.await_count == 3:
+            before_first_confirmation.set()
+            await release_first_confirmation.wait()
+        data, snapshot_items = read_snapshot(features, zones, culture=culture)
+        zone_2 = ZoneState.from_galevo(2, {"mod": {"value": 3}}, snapshot_items)
+        return replace(data, zones={**data.zones, 2: zone_2}), snapshot_items
+
+    def write(mode, *, old_mode):
+        assert old_mode == items["PlantMode:0"]["value"]
+        items["PlantMode:0"] = _plant_mode(value=mode)
+
+    api.async_get_galevo_data.side_effect = read
+    api.async_set_galevo_plant_mode.side_effect = write
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    published = []
+    coordinator.async_add_listener(
+        lambda: published.append(
+            (coordinator.data.discovery.system_value("PlantMode"), set(coordinator.data.zones))
+        )
+    )
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as commands:
+        commands.create_task(coordinator.async_set_plant_mode(0))
+        await before_first_confirmation.wait()
+        commands.create_task(coordinator.async_set_plant_mode(1))
+        await asyncio.sleep(0)
+        api.async_set_galevo_plant_mode.assert_awaited_once_with(0, old_mode=1)
+        release_first_confirmation.set()
+
+    assert api.async_set_galevo_plant_mode.await_count == 2
+    assert api.async_get_galevo_data.await_count == 5
+    assert published == [(0, {1, 2}), (1, {1, 2})]
+
+
+@pytest.mark.parametrize(
+    ("failure_on_read", "error", "ambiguous"),
+    [
+        (2, ElcoConnectionError("readback timed out"), False),
+        (2, ElcoAuthenticationError("session expired"), False),
+        (2, ElcoResponseError("rate limited", status=429, retry_after=120), False),
+        (3, ElcoResponseError("rate limited", status=429, retry_after=120), False),
+        (3, ElcoResponseError("rate limited", status=429, retry_after=120), True),
+    ],
+    ids=[
+        "timeout",
+        "session-expired",
+        "rate-limited",
+        "follow-up-rate-limited",
+        "lost-response-rate-limited",
+    ],
+)
+async def test_plant_mode_readback_failure_never_replays_the_write(
+    hass, galevo_fixture, monkeypatch, failure_on_read, error, ambiguous
+):
+    api, entry, items = galevo_fixture
+    items["PlantMode:0"] = _plant_mode()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    previous = coordinator.data
+    start_reauth = Mock()
+    monkeypatch.setattr(type(entry), "async_start_reauth", start_reauth)
+    api.async_get_galevo_data.reset_mock()
+    read_snapshot = api.async_get_galevo_data.side_effect
+
+    def read(*args, **kwargs):
+        if api.async_get_galevo_data.await_count == failure_on_read:
+            raise error
+        return read_snapshot(*args, **kwargs)
+
+    api.async_get_galevo_data.side_effect = read
+    if ambiguous:
+        api.async_set_galevo_plant_mode.side_effect = ElcoConnectionError("write response lost")
+
+    with pytest.raises(HomeAssistantError, match="could not be verified"):
+        await coordinator.async_set_plant_mode(0)
+
+    api.async_set_galevo_plant_mode.assert_awaited_once_with(0, old_mode=1)
+    assert api.async_get_galevo_data.await_count == failure_on_read
+    assert coordinator.data is previous
+    if isinstance(error, ElcoAuthenticationError):
+        start_reauth.assert_called_once_with(hass)
+    else:
+        start_reauth.assert_not_called()
+    if isinstance(error, ElcoResponseError):
+        assert coordinator._gateway_backoff() > 0
+        with pytest.raises(HomeAssistantError, match="requested a polling delay"):
+            await coordinator.async_set_plant_mode(0)
+        api.async_set_galevo_plant_mode.assert_awaited_once()
+        assert api.async_get_galevo_data.await_count == failure_on_read
 
 
 async def test_ambiguous_plant_mode_write_can_be_verified_without_replay(hass, galevo_fixture):
@@ -318,8 +624,10 @@ async def test_ambiguous_plant_mode_write_can_be_verified_without_replay(hass, g
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
     coordinator = entry.runtime_data
+    api.async_get_galevo_data.reset_mock()
     await coordinator.async_set_plant_mode(0)
     api.async_set_galevo_plant_mode.assert_awaited_once()
+    assert api.async_get_galevo_data.await_count == 2
     assert coordinator.data.discovery.system_value("PlantMode") == 0
 
 
@@ -356,6 +664,198 @@ async def test_bad_snapshot_keeps_last_good_read(hass, galevo_fixture):
     assert not coordinator.last_update_success
     assert coordinator.data is old_data
     assert coordinator.last_successful_update == old_data.captured_at
+
+
+@pytest.fixture
+def galevo_zone_poll(galevo_fixture, monkeypatch):
+    api, entry, items = galevo_fixture
+    api.async_get_zone_numbers.return_value = [1, 2]
+    items.update(
+        _scheduled_dhw_items()
+        | {
+            "PlantMode:0": _plant_mode(),
+            "OutsideTemp:0": {"value": 4},
+            "HeatingFlowTemp:1": {"value": 30, "min": 15, "max": 50},
+        }
+    )
+    client = ElcoApiClient(Mock(), "user", "pass", GATEWAY_ID, "https://example.test")
+    client.last_features_response = api.last_features_response
+    zone_errors: dict[int, ElcoResponseError] = {}
+
+    def read_items(*args, **kwargs):
+        return {key: dict(value) for key, value in items.items()}
+
+    def read_zone(zone_number):
+        if zone_number in zone_errors:
+            raise zone_errors[zone_number]
+        return {
+            "mod": {"value": 3, "allowedOptions": [2, 3]},
+            "comf": {"value": 21, "min": 10, "max": 30},
+            "econ": {"value": 17, "min": 10, "max": 30},
+            "room": 20 + zone_number,
+        }
+
+    monkeypatch.setattr(client, "async_get_system_items", AsyncMock(side_effect=read_items))
+    monkeypatch.setattr(client, "async_get_galevo_zone", AsyncMock(side_effect=read_zone))
+    api.async_get_galevo_data.side_effect = client.async_get_galevo_data
+    return api, entry, client, items, zone_errors
+
+
+@pytest.mark.parametrize("failed_zones", [(1,), (1, 2)], ids=["one-zone", "all-zones"])
+async def test_partial_poll_preserves_fresh_plant_and_recovers_same_entities(
+    hass, galevo_zone_poll, failed_zones
+):
+    api, entry, _, items, zone_errors = galevo_zone_poll
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    registry = er.async_get(hass)
+    thermostat = {
+        zone: registry.async_get_entity_id(
+            "climate", DOMAIN, f"{GATEWAY_ID}_zone_{zone}_thermostat"
+        )
+        for zone in (1, 2)
+    }
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    outdoor = registry.async_get_entity_id("sensor", DOMAIN, f"{GATEWAY_ID}_outside_temperature")
+    flow = registry.async_get_entity_id(
+        "number", DOMAIN, f"{GATEWAY_ID}_zone_1_heating_flow_temperature"
+    )
+    assert all(thermostat.values()) and heater and outdoor and flow
+    timestamp = coordinator.last_successful_update
+    items["OutsideTemp:0"]["value"] = 5
+    zone_errors.update({zone: ElcoResponseError("Invalid zone response") for zone in failed_zones})
+
+    for delay in (60, 300, 900, 3600):
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert coordinator.update_interval == timedelta(seconds=delay)
+        assert coordinator.data.unavailable_zones == failed_zones
+        assert coordinator.last_successful_update == timestamp
+        assert float(hass.states.get(outdoor).state) == 5
+        assert hass.states.get(heater).state == "heat_pump"
+        assert hass.states.get(flow).state == "unavailable"
+        for zone, entity_id in thermostat.items():
+            assert hass.states.get(entity_id).state == (
+                "unavailable" if zone in failed_zones else "auto"
+            )
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["data"]["unavailable_zones"] == list(failed_zones)
+    with pytest.raises(HomeAssistantError, match="Invalid zone response"):
+        await coordinator.async_set_zone_temperature(1, "comfort", 22)
+    api.async_set_zone_temperatures.assert_not_awaited()
+
+    zone_errors.clear()
+    await coordinator.async_refresh()
+    assert coordinator.data.unavailable_zones == ()
+    assert coordinator.last_successful_update == coordinator.data.captured_at > timestamp
+    assert coordinator.update_interval == timedelta(hours=1)
+    assert float(hass.states.get(flow).state) == 30
+    for zone, entity_id in thermostat.items():
+        assert hass.states.get(entity_id).state == "auto"
+        assert entity_id == registry.async_get_entity_id(
+            "climate", DOMAIN, f"{GATEWAY_ID}_zone_{zone}_thermostat"
+        )
+
+
+async def test_healthy_zone_command_requires_fresh_target_and_survives_other_zone_failure(
+    hass, galevo_zone_poll
+):
+    api, entry, client, _, zone_errors = galevo_zone_poll
+    zone_errors[1] = ElcoResponseError("Invalid zone response")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    initial_read = client.async_get_galevo_zone.side_effect
+    comfort_target = 21
+
+    def read_zone(zone_number):
+        data = initial_read(zone_number)
+        data["comf"]["value"] = comfort_target
+        return data
+
+    def write(zone, *, comfort, reduced, cooling):
+        nonlocal comfort_target
+        assert zone.number == 2
+        assert zone.comfort_temperature.value == 21
+        assert reduced == 17
+        assert not cooling
+        comfort_target = comfort
+
+    client.async_get_galevo_zone.side_effect = read_zone
+    api.async_set_zone_temperatures.side_effect = write
+    await coordinator.async_set_zone_temperature(2, "comfort", 22)
+
+    api.async_set_zone_temperatures.assert_awaited_once()
+    assert coordinator.data.unavailable_zones == (1,)
+    thermostat = er.async_get(hass).async_get_entity_id(
+        "climate", DOMAIN, f"{GATEWAY_ID}_zone_2_thermostat"
+    )
+    assert hass.states.get(thermostat).attributes["temperature"] == 22
+
+
+async def test_partial_first_poll_discovers_failed_zone_only_after_recovery(hass, galevo_zone_poll):
+    _, entry, _, _, zone_errors = galevo_zone_poll
+    zone_errors[1] = ElcoResponseError("Invalid zone response")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    registry = er.async_get(hass)
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+
+    assert hass.states.get(heater).state == "heat_pump"
+    assert coordinator.last_successful_update is None
+    assert not registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    assert registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_2_thermostat")
+
+    zone_errors.clear()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    thermostat = registry.async_get_entity_id("climate", DOMAIN, f"{GATEWAY_ID}_zone_1_thermostat")
+    assert hass.states.get(thermostat).state == "auto"
+    assert coordinator.last_successful_update is not None
+
+
+@pytest.mark.parametrize("scope", ["plant", "zone-rate-limit"])
+async def test_unusable_plant_or_zone_rate_limit_still_fails_full_poll(
+    hass, galevo_zone_poll, scope
+):
+    _, entry, client, items, zone_errors = galevo_zone_poll
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    registry = er.async_get(hass)
+    heater = registry.async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    old_data = coordinator.data
+    client.async_get_galevo_zone.reset_mock()
+    if scope == "plant":
+        items.clear()
+    else:
+        zone_errors[1] = ElcoResponseError("Rate limited", status=429, retry_after=120)
+
+    await coordinator.async_refresh()
+
+    assert not coordinator.last_update_success
+    assert coordinator.data is old_data
+    assert coordinator.last_successful_update == old_data.captured_at
+    assert hass.states.get(heater).state == "unavailable"
+    if scope == "plant":
+        client.async_get_galevo_zone.assert_not_awaited()
+        assert coordinator.last_exception.retry_after == 60
+    else:
+        client.async_get_galevo_zone.assert_awaited_once_with(1)
+        assert coordinator._gateway_backoff() > 0
+        assert coordinator.last_exception.retry_after == 120
+        client.async_get_system_items.reset_mock()
+        await coordinator.async_refresh()
+        client.async_get_system_items.assert_not_awaited()
 
 
 async def test_holiday_uses_explicit_draft_and_checks_readback(hass, galevo_fixture, monkeypatch):
@@ -764,6 +1264,7 @@ async def test_native_water_heater_combines_mode_and_target_with_partial_result(
     api.async_set_galevo_dhw_settings.side_effect = write
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done(wait_background_tasks=True)
+    api.async_get_galevo_data.reset_mock()
     registry = er.async_get(hass)
     heater = registry.async_get_entity_id(
         "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
@@ -785,6 +1286,7 @@ async def test_native_water_heater_combines_mode_and_target_with_partial_result(
         with pytest.raises(HomeAssistantError, match="always-active DHW setpoint is read-only"):
             await call
         api.async_set_galevo_dhw_settings.assert_not_awaited()
+        assert api.async_get_galevo_data.await_count == 1
         assert hass.states.get(heater).state == "heat_pump"
         return
     if target_result in {"rejected", "becomes_read_only"}:
@@ -796,6 +1298,7 @@ async def test_native_water_heater_combines_mode_and_target_with_partial_result(
         call.kwargs["comfort"] for call in api.async_set_galevo_dhw_settings.await_args_list
     ]
     assert submitted_targets == ([None] if target_result == "becomes_read_only" else [None, 56])
+    assert api.async_get_galevo_data.await_count == (3 if target_result == "confirmed" else 2)
     assert hass.states.get(heater).state == "performance"
     assert hass.states.get(heater).attributes["temperature"] == (
         56 if target_result == "confirmed" else 55

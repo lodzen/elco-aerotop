@@ -40,9 +40,8 @@ class ElcoZoneClimate(ElcoAerotopEntity, ClimateEntity):
         coordinator: ElcoDataUpdateCoordinator,
         zone_number: int,
     ) -> None:
-        super().__init__(coordinator, f"zone_{zone_number}_thermostat")
+        super().__init__(coordinator, "thermostat", zone_number=zone_number)
         self._zone_number = zone_number
-        self._attr_name = f"Zone {zone_number} thermostat"
 
     @property
     def _zone(self) -> ZoneState:

@@ -45,7 +45,7 @@ def _install_homeassistant_stubs() -> None:
             self.hass = hass
             self.data = None
 
-        async def async_request_refresh(self) -> None:
+        async def async_refresh(self) -> None:
             self.data = await self._async_update_data()
 
         def async_set_updated_data(self, data) -> None:
@@ -321,13 +321,13 @@ async def test_every_write_cancels_discovery_before_gateway_access(write_name, w
     discovery_task = asyncio.create_task(busy_discovery())
     coordinator._background_discovery_task = discovery_task
     await discovery_started.wait()
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await asyncio.wait_for(write(coordinator), timeout=1)
 
     assert discovery_task.cancelled()
     assert coordinator.api.write_calls[0][0] == write_name
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -349,7 +349,7 @@ async def test_every_pre_write_read_fetches_one_zone_uncached(write) -> None:
     api = FakeApi([_multi_zone_data()])
     coordinator = _coordinator(api)
     coordinator._zone_numbers = [1, 2]
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await write(coordinator)
 
@@ -383,26 +383,26 @@ async def test_ambiguous_write_is_confirmed_by_fresh_read(write, reconciled_data
         write_responses=[ElcoConnectionError("response lost")],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await write(coordinator)
 
     assert api.get_data_arguments == [([1], False), ([1], False)]
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cancel_holiday_preserves_write_policy_and_refreshes() -> None:
     api = FakeApi([_data(holidays=[_holiday()])])
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_cancel_zone_holiday(1)
 
     assert api.get_data_arguments == [([1], False)]
     assert api.write_calls[0][0] == "cancel_zone_holiday"
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -412,27 +412,27 @@ async def test_ambiguous_cancel_holiday_is_confirmed_by_fresh_read() -> None:
         write_responses=[ElcoConnectionError("response lost")],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_cancel_zone_holiday(1)
 
     assert api.get_data_arguments == [([1], False), ([1], False)]
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cancel_holiday_without_current_period_is_rejected_before_write() -> None:
     api = FakeApi([_data(holidays=[])])
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="No current holiday"):
         await coordinator.async_cancel_zone_holiday(1)
 
     assert api.get_data_arguments == [([1], False)]
     assert api.write_calls == []
-    coordinator.async_request_refresh.assert_not_awaited()
+    coordinator.async_refresh.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -442,13 +442,13 @@ async def test_unconfirmed_ambiguous_write_refreshes_then_reports_failure() -> N
         write_responses=[ElcoResponseError("server failed", status=503)],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="was not confirmed"):
         await coordinator.async_set_zone_temperature(1, "comfort", 24)
 
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -458,13 +458,13 @@ async def test_ambiguous_write_with_failed_reconciliation_reports_unknown_outcom
         write_responses=[ElcoConnectionError("response lost")],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="may have been applied"):
         await coordinator.async_set_zone_mode(1, 2)
 
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_not_awaited()
+    coordinator.async_refresh.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -474,14 +474,14 @@ async def test_ambiguous_write_honors_retry_after_without_reconciliation() -> No
         write_responses=[ElcoResponseError("service unavailable", status=503, retry_after=120)],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="requested a delay"):
         await coordinator.async_set_zone_mode(1, 2)
 
     assert api.get_data_calls == 1
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_not_awaited()
+    coordinator.async_refresh.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -491,7 +491,7 @@ async def test_bsb_number_write_reads_validates_writes_and_reads_back() -> None:
     api = FakeApi(bsb_responses=[before, after])
     coordinator = _coordinator(api)
     coordinator._slow_discovery = ReadOnlyDiscovery(bsb_points=before)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_set_bsb_number("heating_curve_slope_720", 1.0)
 
@@ -500,7 +500,7 @@ async def test_bsb_number_write_reads_validates_writes_and_reads_back() -> None:
     assert api.write_calls[0][0] == "bsb_point"
     assert api.write_calls[0][1] == (before["2950646"], 1.0)
     assert coordinator._slow_discovery.bsb_points["2950646"]["valueAsNumber"] == 1.0
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -510,7 +510,7 @@ async def test_frost_setpoint_write_reads_its_dynamic_reduced_limit() -> None:
     after["2950546"] = {**after["2950546"], "valueAsNumber": 10}
     api = FakeApi(bsb_responses=[before, after])
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_set_bsb_number("heating_circuit_frost_protection_setpoint_714", 10)
 
@@ -526,13 +526,13 @@ async def test_holiday_level_write_uses_fresh_server_enum_code() -> None:
     after = _bsb_points(holiday_level=1)
     api = FakeApi(bsb_responses=[before, after])
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_set_holiday_operating_level("Reduced")
 
     assert api.write_calls[0][1] == (before["2950338"], 1)
     assert api.bsb_read_arguments == [("2950338",), ("2950338",)]
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -542,20 +542,20 @@ async def test_bsb_write_is_not_replayed_after_ambiguous_response() -> None:
         bsb_responses=[_bsb_points(slope=0.8), _bsb_points(slope=1.0)],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     await coordinator.async_set_bsb_number("heating_curve_slope_720", 1.0)
 
     assert len(api.write_calls) == 1
     assert len(api.bsb_read_arguments) == 2
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_cooling_temperature_write_preserves_the_cooling_pair() -> None:
     api = FakeApi([_data(cooling_active=True)])
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="temperatures can only be changed"):
         await coordinator.async_set_zone_temperature(1, "comfort", 24)
@@ -566,7 +566,7 @@ async def test_cooling_temperature_write_preserves_the_cooling_pair() -> None:
     assert name == "zone_temperature"
     assert args[0].cooling_active is True
     assert kwargs == {"comfort": 23.5, "reduced": 28, "cooling": True}
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -577,14 +577,14 @@ async def test_permanent_write_response_error_is_not_reconciled(status: int | No
         write_responses=[ElcoResponseError("invalid request", status=status)],
     )
     coordinator = _coordinator(api)
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     with pytest.raises(HomeAssistantError, match="invalid request"):
         await coordinator.async_set_zone_mode(1, 2)
 
     assert api.get_data_calls == 1
     assert len(api.write_calls) == 1
-    coordinator.async_request_refresh.assert_not_awaited()
+    coordinator.async_refresh.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -903,7 +903,7 @@ async def test_write_refresh_does_not_launch_slow_discovery() -> None:
 
     await coordinator._async_refresh_after_write()
 
-    assert coordinator._skip_slow_discovery_once is False
+    assert coordinator._write_refresh_task is None
     assert coordinator._polls_until_slow_discovery == 0
     coordinator.start_deferred_discovery.assert_not_called()
 

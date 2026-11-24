@@ -1,0 +1,84 @@
+{
+  "oldestMonth": "November 2024",
+  "isIntensiveLogsActive": false,
+  "asKwhRaw": {
+    "histogramData": [
+      {
+        "tab": "ProducedEnergy",
+        "series": "Heating",
+        "period": "PreviousYear",
+        "items": [
+          { "x": "Jan", "y": 60 },
+          { "x": "Feb", "y": 100 },
+          { "x": "Mar", "y": 60 },
+          { "x": "Apr", "y": 100 },
+          { "x": "May", "y": 60 },
+          { "x": "Jun", "y": 100 },
+          { "x": "Jul", "y": 60 },
+          { "x": "Aug", "y": 100 },
+          { "x": "Sep", "y": 60 },
+          { "x": "Oct", "y": 100 },
+          { "x": "Nov", "y": 60 },
+          { "x": "Dec", "y": 100 }
+        ]
+      },
+      {
+        "tab": "ConsumedElectricity",
+        "series": "Heating",
+        "period": "PreviousYear",
+        "items": [
+          { "x": "Jan", "y": 20 },
+          { "x": "Feb", "y": 20 },
+          { "x": "Mar", "y": 20 },
+          { "x": "Apr", "y": 20 },
+          { "x": "May", "y": 20 },
+          { "x": "Jun", "y": 20 },
+          { "x": "Jul", "y": 20 },
+          { "x": "Aug", "y": 20 },
+          { "x": "Sep", "y": 20 },
+          { "x": "Oct", "y": 20 },
+          { "x": "Nov", "y": 20 },
+          { "x": "Dec", "y": 20 }
+        ]
+      },
+      {
+        "tab": "ProducedEnergy",
+        "series": "Dhw",
+        "period": "PreviousYear",
+        "items": [
+          { "x": "Jan", "y": 30 },
+          { "x": "Feb", "y": 30 },
+          { "x": "Mar", "y": 30 },
+          { "x": "Apr", "y": 30 },
+          { "x": "May", "y": 30 },
+          { "x": "Jun", "y": 30 },
+          { "x": "Jul", "y": 30 },
+          { "x": "Aug", "y": 30 },
+          { "x": "Sep", "y": 30 },
+          { "x": "Oct", "y": 30 },
+          { "x": "Nov", "y": 30 },
+          { "x": "Dec", "y": 30 }
+        ]
+      },
+      {
+        "tab": "ConsumedElectricity",
+        "series": "Dhw",
+        "period": "PreviousYear",
+        "items": [
+          { "x": "Jan", "y": 10 },
+          { "x": "Feb", "y": 20 },
+          { "x": "Mar", "y": 10 },
+          { "x": "Apr", "y": 20 },
+          { "x": "May", "y": 10 },
+          { "x": "Jun", "y": 20 },
+          { "x": "Jul", "y": 10 },
+          { "x": "Aug", "y": 20 },
+          { "x": "Sep", "y": 10 },
+          { "x": "Oct", "y": 20 },
+          { "x": "Nov", "y": 10 },
+          { "x": "Dec", "y": 20 }
+        ]
+      }
+    ]
+  }
+}

@@ -56,14 +56,14 @@ class ElcoBinarySensor(ElcoAerotopEntity, BinarySensorEntity):
         self,
         coordinator: ElcoDataUpdateCoordinator,
         key: str,
-        name: str,
         value_fn: Callable[[ElcoData], bool | None],
         device_class: BinarySensorDeviceClass = BinarySensorDeviceClass.RUNNING,
         entity_category: EntityCategory | None = None,
         enabled_default: bool = True,
+        *,
+        zone_number: int | None = None,
     ) -> None:
-        super().__init__(coordinator, key)
-        self._attr_name = name
+        super().__init__(coordinator, key, zone_number=zone_number)
         self._attr_device_class = device_class
         self._attr_entity_category = entity_category
         self._attr_entity_registry_enabled_default = enabled_default
@@ -104,7 +104,6 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 "gateway_online",
-                "Gateway online",
                 _gateway_online,
                 device_class=BinarySensorDeviceClass.CONNECTIVITY,
                 entity_category=EntityCategory.DIAGNOSTIC,
@@ -116,7 +115,6 @@ def _create_entities(
             ElcoControllerErrorBinarySensor(
                 coordinator,
                 "controller_error",
-                "Controller error",
                 lambda state: bool(state.discovery.bus_errors),
                 device_class=BinarySensorDeviceClass.PROBLEM,
                 entity_category=EntityCategory.DIAGNOSTIC,
@@ -128,7 +126,6 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 "heat_pump_running",
-                "Heat pump running",
                 _heat_pump_running,
             )
         )
@@ -143,7 +140,6 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 "flame_on",
-                "Flame on",
                 lambda state: state.plant.flame_on,
             )
         )
@@ -152,31 +148,28 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 "dhw_enabled",
-                "Domestic hot water enabled",
                 lambda state: state.plant.dhw_enabled,
                 entity_category=EntityCategory.DIAGNOSTIC,
                 enabled_default=False,
             )
         )
 
-    for item_id, key, name, entity_category, enabled_default in (
+    for item_id, key, entity_category, enabled_default in (
         (
             "AutomaticThermoregulation",
             "automatic_thermoregulation",
-            "Automatic thermoregulation",
             EntityCategory.DIAGNOSTIC,
             True,
         ),
-        ("IsQuite", "quiet_mode", "Quiet mode", EntityCategory.DIAGNOSTIC, True),
-        ("IsDhwBoost", "dhw_boost", "Domestic hot water boost", None, True),
+        ("IsQuite", "quiet_mode", EntityCategory.DIAGNOSTIC, True),
+        ("IsDhwBoost", "dhw_boost", None, True),
         (
             "IsResistorOn",
             "resistor_on",
-            "Backup resistor active",
             EntityCategory.DIAGNOSTIC,
             True,
         ),
-        ("Holiday", "holiday_active", "Holiday active", EntityCategory.DIAGNOSTIC, True),
+        ("Holiday", "holiday_active", EntityCategory.DIAGNOSTIC, True),
     ):
         if data.discovery.system_item(item_id) is None:
             continue
@@ -184,7 +177,6 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 key,
-                name,
                 lambda state, source=item_id: _system_boolean(state, source),
                 entity_category=entity_category,
                 enabled_default=enabled_default,
@@ -194,18 +186,16 @@ def _create_entities(
     plant_error_specs = (
         (
             "outside_temperature_error",
-            "Outside temperature sensor problem",
             data.plant.outside_temperature_error,
             "outside_temperature_error",
         ),
         (
             "dhw_temperature_error",
-            "Domestic hot water temperature sensor problem",
             data.plant.dhw_temperature_error,
             "dhw_temperature_error",
         ),
     )
-    for key, name, current_value, attribute in plant_error_specs:
+    for key, current_value, attribute in plant_error_specs:
         probe_present = (
             data.plant.has_outside_temperature_probe is True
             if key == "outside_temperature_error"
@@ -221,7 +211,6 @@ def _create_entities(
             ElcoBinarySensor(
                 coordinator,
                 key,
-                name,
                 lambda state, field=attribute: getattr(state.plant, field),
                 BinarySensorDeviceClass.PROBLEM,
                 entity_category=EntityCategory.DIAGNOSTIC,
@@ -233,7 +222,6 @@ def _create_entities(
         zone_specs = (
             (
                 "heat_request",
-                "heat request",
                 zone.heat_or_cool_request,
                 "heat_or_cool_request",
                 None,
@@ -241,7 +229,6 @@ def _create_entities(
             ),
             (
                 "heating_active",
-                "heating active",
                 zone.heating_active,
                 "heating_active",
                 EntityCategory.DIAGNOSTIC,
@@ -249,7 +236,6 @@ def _create_entities(
             ),
             (
                 "cooling_active",
-                "cooling active",
                 zone.cooling_active,
                 "cooling_active",
                 EntityCategory.DIAGNOSTIC,
@@ -258,7 +244,6 @@ def _create_entities(
         )
         for (
             key_suffix,
-            label,
             current_value,
             attribute,
             entity_category,
@@ -271,37 +256,37 @@ def _create_entities(
             entities.append(
                 ElcoBinarySensor(
                     coordinator,
-                    f"zone_{zone_number}_{key_suffix}",
-                    f"Zone {zone_number} {label}",
+                    key_suffix,
                     lambda state, zone_id=zone_number, field=attribute: getattr(
                         state.zones[zone_id], field
                     ),
                     entity_category=entity_category,
                     enabled_default=enabled_default,
+                    zone_number=zone_number,
                 )
             )
         if data.discovery.system_item("IsZonePilotOn", zone_number) is not None:
             entities.append(
                 ElcoBinarySensor(
                     coordinator,
-                    f"zone_{zone_number}_pilot",
-                    f"Zone {zone_number} pilot",
+                    "pilot",
                     lambda state, zone_id=zone_number: _system_boolean(
                         state, "IsZonePilotOn", zone_id
                     ),
                     entity_category=EntityCategory.DIAGNOSTIC,
                     enabled_default=False,
+                    zone_number=zone_number,
                 )
             )
         if supports_room_sensor(zone) and zone.room_temperature_error is not None:
             entities.append(
                 ElcoBinarySensor(
                     coordinator,
-                    f"zone_{zone_number}_room_temperature_error",
-                    f"Zone {zone_number} room temperature sensor problem",
+                    "room_temperature_error",
                     lambda state, zone_id=zone_number: state.zones[zone_id].room_temperature_error,
                     BinarySensorDeviceClass.PROBLEM,
                     entity_category=EntityCategory.DIAGNOSTIC,
+                    zone_number=zone_number,
                 )
             )
     async_add_entities(entities)

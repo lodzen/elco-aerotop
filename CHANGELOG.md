@@ -2,6 +2,20 @@
 
 All notable changes to ELCO Aerotop for Home Assistant are documented here.
 
+## 0.4.1
+
+- Add a Galevo estimated Jahresarbeitszahl for the previous calendar year when Remocon returns
+  complete, matching heat and electricity data for heating and hot water.
+- Add a [dashboard setup guide and copyable YAML](docs/dashboard.md) with thermostat controls,
+  hot-water and activity history, refresh status, and optional energy and maintenance cards.
+- Keep fresh Galevo plant readings and healthy zones available when a zone read fails. Schedule an
+  early recovery poll and restore recovered entities under their existing IDs.
+- Add German display names for BSB and Galevo entities through Home Assistant translations.
+- Publish the verified Galevo plant snapshot directly after a command. Check once more when
+  Remocon still shows the old value so a late confirmation can succeed.
+- Publish the BSB core refresh after a command while optional system readings load in the
+  background.
+
 ## 0.4.0
 
 - Add Galevo controller support alongside BSB. Set up one integration entry per gateway and run

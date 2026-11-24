@@ -19,6 +19,8 @@
 - [Overview](#overview)
 - [What you can do](#what-you-can-do)
 - [Entities](#entities)
+- [Dashboard example](#dashboard-example)
+- [Annual performance](#annual-performance)
 - [Holidays](#holidays)
 - [How data is discovered](#how-data-is-discovered)
 - [Installation](#installation)
@@ -47,6 +49,8 @@ directly to the heat pump over the local network.
 
 ![ELCO Aerotop heating and hot-water dashboard in Home Assistant](docs/images/home-assistant-dashboard.png)
 
+[Set up a dashboard like this](docs/dashboard.md) · [Copy the dashboard YAML](docs/examples/heat-pump-dashboard.yaml)
+
 ## What you can do
 
 The first stable release with Galevo support is [v0.4.0](https://github.com/thomasgregg/elco-aerotop/releases/tag/v0.4.0).
@@ -61,7 +65,7 @@ Available controls and readings depend on the features reported by each gateway.
 | **Holidays** | View holidays in a read-only zone calendar. Start, extend, or cancel the current holiday. Zone 1 offers Reduced or Frost protection. | Enter plant-wide start and end dates. Use the Holiday switch to submit or cancel the period. |
 | **Heating configuration** | Frost-protection temperature, heating-curve slope, and summer/winter limit. | Heating and cooling flow temperatures and offsets, plus automatic thermoregulation. |
 | **Quiet mode and hot-water boost** | — | Dedicated on/off switches. |
-| **Energy history** | Optional annual history for energy used and delivered, cooling, and performance factor. | Heating, hot-water, and cooling consumption for the last 24 hours, 7 days, complete month, and 12 complete months. |
+| **Energy history** | Optional annual history for energy used and delivered, cooling, and performance factor. | Heating, hot-water, and cooling consumption for four periods, plus estimated JAZ for the previous calendar year when Remocon provides complete metering data. |
 | **Weekly programs** | Read-only schedule data in diagnostics. | Read-only schedule data in diagnostics. |
 | **Controller diagnostics** | Controller faults, maintenance, appliance health, and supported BSB datapoints. | Controller faults, bus device inventory, gateway signal level, and supported Remocon data items. |
 
@@ -99,6 +103,21 @@ states, creation conditions, read/write behavior, and explanations of maintenanc
 energy values—including which entities exist for each controller family. Existing entity IDs and
 enabled/disabled choices are preserved during upgrades; new defaults apply only when an entity is
 first registered.
+
+## Dashboard example
+
+The [dashboard guide](docs/dashboard.md) includes [ready-to-copy YAML](docs/examples/heat-pump-dashboard.yaml)
+with anonymized entity IDs, native heating and hot-water controls, graphs, gateway status, and
+manual refresh. It also shows how to add a Galevo mode and energy section or BSB maintenance and
+annual performance. Use your actual entity IDs from the Home Assistant device page.
+
+## Annual performance
+
+Galevo's **Estimated JAZ – previous calendar year** uses Remocon's estimated heat production
+and electricity consumption for space heating and hot water. It appears after Remocon provides
+matching monthly data for a complete January–December period. BSB's **Yearly performance factor**
+comes from the controller and can be enabled under Diagnostics. See [energy-history entities](docs/entities.md#energy-history-entities)
+for the calculation, supported periods, and availability requirements.
 
 Remocon installation metadata is exposed as diagnostic entities when its JSON APIs return a
 value. This includes gateway online state, overall plant status, appliance model and serial,
@@ -245,14 +264,14 @@ companion value. Every write therefore follows this sequence:
 7. Send the typed command once through the dedicated Remocon endpoint. An explicit `401`/`403`
    rejection may renew the session and replay once because the unauthenticated request was rejected.
 8. Never resend a command after a timeout, disconnect, or ambiguous server failure. When Remocon
-   permits another request, perform one uncached read to determine whether the command took effect.
-9. Refresh core Home Assistant state without launching slow discovery behind the write.
+   permits another request, use an uncached read to check whether the command took effect.
+9. Publish the refreshed core state. BSB updates optional system readings in the background.
+   Galevo plant-wide controls publish the complete verification snapshot directly.
 
-If the verification read confirms the requested values, Home Assistant treats the command as
-successful. If it confirms old values, the command reports that it was not applied. If verification
-also fails—or Remocon supplies `Retry-After`—the integration reports that the outcome is unknown
-and asks the user to check the controller or official application. This avoids duplicate writes
-while still recovering automatically from a lost success response.
+Galevo plant-wide controls allow one additional uncached read if the first snapshot does not
+confirm the requested values. The command succeeds when a readback confirms the change and
+reports an unconfirmed result if the final read still differs. Failed verification can leave
+the outcome unknown. The integration honors Remocon's `Retry-After`.
 
 Galevo plant mode uses the mobile `POST /api/v2/remote/plantData/{gateway}/mode`
 route with `{new, old}`. The integration refreshes the current mode and choices before sending,
@@ -326,21 +345,25 @@ off-season comfort controls keep their IDs and appear as unavailable.
   reports for that entity.
 - Authentication expiry triggers one controlled login and request replay. Rejected credentials
   or a second authentication rejection start Home Assistant's reauthentication flow.
-- A complete multi-zone snapshot is accepted only when every requested zone succeeds; partial data
-  from a failed attempt is discarded.
+- During Galevo polling, fresh plant readings and healthy zones remain available if an individual
+  zone read fails. Home Assistant marks the failed zone's entities unavailable and restores them
+  under their existing IDs when a later poll succeeds. **Last successful update** records the last
+  complete refresh. Authentication failures and server-requested pauses affect the whole gateway.
+- BSB polling and the fresh reads used for commands still require every requested zone to succeed.
 - Core reads immediately retry once after a fast transport interruption, the controller's
   `Communication error`, or HTTP `408`, `500`, `502`, `503`, or `504`. Full timeouts, TLS/certificate
   failures, authentication errors, rate limits, and permanent response errors are not immediately
   retried.
-- After a failed core refresh, Home Assistant schedules recovery after 60 seconds, then 5 minutes,
-  then 15 minutes, and finally the configured polling interval. Each delay is capped at the normal
-  interval, so a short user-selected interval is never made slower by the backoff.
+- After a transient core failure, an unusable Galevo plant response, or an incomplete Galevo zone
+  refresh, Home Assistant schedules recovery after 60 seconds, then 5 minutes, then 15 minutes,
+  and finally the configured polling interval. Each delay is capped at the normal interval.
 - HTTP `Retry-After` is honored for rate limits and temporary service failures; a rate limit without
   a usable delay defaults to 5 minutes. Parsed server delays are bounded to one day.
 - Each HTTP request has a 15-second connection phase, a 65-second response-read phase, and a
   70-second total limit because valid gateways can take close to a minute. A complete `GetData`
   operation has one shared budget of 70 seconds per requested zone, so restarting a failed
-  multi-zone snapshot never doubles its maximum duration.
+  multi-zone snapshot never doubles its maximum duration. Regular Galevo polling has a separate
+  70-second budget for the plant read and each zone read, including any immediate retry.
 - Deferred optional discovery can stop early on connection failures, probe timeouts, or rate
   limits. It resumes later without making core heating and hot-water entities unavailable.
   See [gateway discovery](docs/discovery.md) for the full rules.

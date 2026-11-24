@@ -30,7 +30,6 @@ from .entity import ElcoAerotopEntity, async_setup_platform_entities
 class ElcoWaterHeater(ElcoAerotopEntity, WaterHeaterEntity):
     """Represent ELCO domestic hot water using Home Assistant's native model."""
 
-    _attr_name = "Domestic hot water"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:

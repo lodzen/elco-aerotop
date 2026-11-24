@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -21,6 +21,7 @@ from .api import (
     ElcoApiError,
     ElcoAuthenticationError,
     ElcoConnectionError,
+    ElcoGalevoPlantDataError,
     ElcoResponseError,
 )
 from .bsb_controls import (
@@ -46,6 +47,7 @@ from .const import (
 )
 from .control_mapping import ZONE_MODE_AUTOMATIC
 from .holiday import current_holiday
+from .metering import GalevoAnnualMetering, galevo_annual_metering
 from .models import (
     ElcoData,
     NumericVariable,
@@ -62,6 +64,7 @@ _LOGGER = logging.getLogger(__name__)
 _SLOW_DISCOVERY_INTERVAL_SECONDS = 3600
 _OPTIONAL_PROBE_TIMEOUT = 65
 _BSB_PROBE_TIMEOUT = 30
+_GALEVO_METERING_TIMEOUT = 30
 _TRANSIENT_RECOVERY_DELAYS = (60, 300, 900)
 _DEFAULT_RATE_LIMIT_DELAY = 300
 _TRANSIENT_RESPONSE_STATUSES = frozenset({408, 500, 502, 503, 504})
@@ -125,7 +128,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         self._background_discovery_task: asyncio.Task[None] | None = None
         self.initial_refresh_task: asyncio.Task[None] | None = None
         self.unloading = False
-        self._skip_slow_discovery_once = False
+        self._write_refresh_task: asyncio.Task[Any] | None = None
         self._transient_failure_count = 0
         self._optional_transient_failures = 0
         self._optional_retry_not_before = 0.0
@@ -257,6 +260,14 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         """Return the controller family reported by the Features response."""
         return controller_system_type(self.api.last_features_response)
 
+    @property
+    def galevo_annual_metering(self) -> GalevoAnnualMetering | None:
+        """Return the latest complete report while it still represents last year."""
+        if self.data is None:
+            return None
+        report = self.data.discovery.galevo_annual_metering
+        return report if report is not None and report.year == self._local_now().year - 1 else None
+
     async def _async_refresh_core_discovery(
         self,
         data: ElcoData,
@@ -320,10 +331,12 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         status["bsb_points"] = "deferred:background" if is_bsb else "unsupported:system_family"
         for program in programs:
             status[f"schedule:{program}"] = "deferred:background"
-        if self._features.get("hasMetering", False):
-            status["metering"] = "deferred:background" if is_bsb else "unsupported:system_family"
-        else:
-            status["metering"] = "unsupported:feature"
+        has_metering = self._features.get("hasMetering", False)
+        status["metering"] = (
+            "deferred:background"
+            if has_metering is True or (is_bsb and has_metering)
+            else "unsupported:feature"
+        )
         status["maintenance"] = "deferred:background"
         status["automated_monitoring"] = "deferred:background"
         status["bsb_plant_data"] = "deferred:background" if is_bsb else "unsupported:system_family"
@@ -424,7 +437,8 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     schedules[program] = schedule
 
             features = self._features
-            if is_bsb and features is not None and features.get("hasMetering", False):
+            has_galevo_metering = not is_bsb and features.get("hasMetering") is True
+            if is_bsb and features.get("hasMetering", False):
                 metering = await self._async_serialized_optional_probe(
                     "metering",
                     lambda: self.api.async_get_metering(
@@ -435,11 +449,8 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 )
             else:
                 metering = None
-                status["metering"] = (
-                    "unsupported:feature"
-                    if not (features or {}).get("hasMetering", False)
-                    else "unsupported:system_family"
-                )
+                if not has_galevo_metering:
+                    status["metering"] = "unsupported:feature"
             if is_bsb:
                 maintenance = await self._async_serialized_optional_probe(
                     "maintenance",
@@ -556,10 +567,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             else:
                 status["bsb_points"] = "unavailable"
 
-            self._slow_discovery = replace(
+            discovery = replace(
                 base,
                 schedules=schedules,
                 metering=metering,
+                galevo_annual_metering=(
+                    self._slow_discovery.galevo_annual_metering if has_galevo_metering else None
+                ),
                 maintenance=maintenance,
                 automated_monitoring=automated_monitoring,
                 bsb_boiler_data=bsb_boiler_data,
@@ -570,28 +584,87 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 energy_sequences=energy_sequences,
                 probe_status=status,
             )
-            current = self.data
-            if self.unloading:
+            self._publish_deferred_discovery(discovery)
+            if has_galevo_metering:
+                await self._async_refresh_galevo_metering(features, has_cooling)
+
+    async def _async_refresh_galevo_metering(
+        self, features: dict[str, Any], has_cooling: bool
+    ) -> None:
+        """Fetch the web report after the regular discovery data has been published."""
+        status = dict(self._slow_discovery.probe_status)
+        async with self._gateway_lock:
+            if self.unloading or self._gateway_backoff():
                 return
-            discovery = replace(
-                self._slow_discovery,
-                system_items=current.discovery.system_items,
+            year = self._local_now().year - 1
+            payload = await self._async_optional_probe(
+                "metering",
+                self.api.async_get_metering(features, has_cooling=has_cooling, retry_auth=True),
+                status,
+                timeout_seconds=_GALEVO_METERING_TIMEOUT,
             )
-            self.data = replace(current, discovery=discovery)
-            self.async_update_listeners()
+        report = (
+            galevo_annual_metering(payload, year=year)
+            if year == self._local_now().year - 1
+            else None
+        )
+        if status["metering"] == "available" and report is None:
+            status["metering"] = "unavailable:incomplete_previous_year"
+        self._publish_deferred_discovery(
+            replace(self._slow_discovery, galevo_annual_metering=report, probe_status=status)
+        )
+
+    @callback
+    def _publish_deferred_discovery(self, discovery: ReadOnlyDiscovery) -> None:
+        """Merge optional data into the latest core snapshot."""
+        if self.unloading:
+            return
+        self._slow_discovery = discovery
+        current = self.data
+        discovery = replace(discovery, system_items=current.discovery.system_items)
+        self.data = replace(current, discovery=discovery)
+        self.async_update_listeners()
 
     def start_deferred_discovery(self, *, refresh_core: bool = False) -> None:
         """Start one managed background discovery task if none is running."""
+        self._start_background_discovery(
+            lambda: self.async_refresh_deferred_discovery(refresh_core=refresh_core)
+        )
+
+    def _start_background_discovery(self, run: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        """Track optional gateway work so a new command or unload can cancel it."""
         if self.unloading or (
             self._background_discovery_task is not None
             and not self._background_discovery_task.done()
         ):
             return
         self._background_discovery_task = self.hass.async_create_background_task(
-            self.async_refresh_deferred_discovery(refresh_core=refresh_core),
+            run(),
             f"{DOMAIN} deferred discovery",
             eager_start=False,
         )
+
+    async def _async_refresh_bsb_system_items(self, snapshot: ElcoData) -> None:
+        """Refresh optional BSB items after publishing the core command readback."""
+        assert self._features is not None and self._zone_numbers is not None
+        async with self._gateway_lock:
+            if self.unloading or self.data is not snapshot or self._gateway_backoff():
+                return
+            status = dict(snapshot.discovery.probe_status)
+            system_items = await self._async_optional_probe(
+                "system_items",
+                self.api.async_get_system_items(
+                    self._features, self._zone_numbers, culture=self._culture
+                ),
+                status,
+            )
+            if self.unloading or self.data is not snapshot:
+                return
+            discovery = replace(
+                snapshot.discovery, system_items=system_items or {}, probe_status=status
+            )
+            self.data = replace(snapshot, discovery=discovery)
+            self.async_update_listeners()
 
     async def _async_cancel_deferred_discovery(self) -> None:
         """Stop optional gateway traffic before a user command."""
@@ -622,6 +695,12 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             self._gateway_retry_not_before, asyncio.get_running_loop().time() + delay
         )
 
+    def _record_response_backoff(self, error: ElcoApiError) -> None:
+        if isinstance(error, ElcoResponseError) and (
+            error.status == 429 or error.retry_after is not None
+        ):
+            self._record_gateway_backoff(error.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
+
     def _gateway_backoff(self) -> float:
         return max(0.0, self._gateway_retry_not_before - asyncio.get_running_loop().time())
 
@@ -642,10 +721,49 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             error.status is None and "communication error" in str(error).casefold()
         )
 
+    def _core_snapshot(
+        self,
+        data: ElcoData,
+        system_items: dict[str, dict[str, Any]],
+        status: dict[str, str],
+        system_type: int | None,
+    ) -> ElcoData:
+        """Attach optional discovery to a fresh core capture."""
+        discovery = replace(
+            self._slow_discovery,
+            features=self._features or {},
+            features_response=self.api.last_features_response,
+            system_items=system_items,
+            probe_status=status,
+            system_type=system_type,
+        )
+        return replace(data, discovery=discovery)
+
+    def _record_snapshot(self, data: ElcoData) -> None:
+        """Track the last complete snapshot or shorten polling during zone recovery."""
+        previously_unavailable = self.data.unavailable_zones if self.data is not None else ()
+        if data.unavailable_zones:
+            delay = self._next_transient_recovery_delay()
+            self.update_interval = timedelta(seconds=delay)
+            if data.unavailable_zones != previously_unavailable:
+                _LOGGER.warning(
+                    "Galevo zone data unavailable for zones %s",
+                    ", ".join(map(str, data.unavailable_zones)),
+                )
+            return
+        if previously_unavailable:
+            _LOGGER.info("Galevo zone reads recovered")
+        self.update_interval = timedelta(seconds=self._scan_interval)
+        self._transient_failure_count = 0
+        self.last_successful_update = data.captured_at
+        self._notify_successful_update_listeners()
+
     async def _async_update_data(self) -> ElcoData:
+        self.update_interval = timedelta(seconds=self._scan_interval)
         try:
             start_slow_discovery = False
             refresh_core = False
+            write_refresh = self._write_refresh_task is asyncio.current_task()
             async with self._gateway_lock:
                 if self.unloading:
                     raise UpdateFailed("The integration is unloading")
@@ -665,19 +783,26 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                         self._features,
                         self._zone_numbers,
                         culture=self._culture,
+                        allow_partial_zones=True,
                     )
                     status["system_items"] = "available"
                 else:
                     data = await self.api.async_get_data(self._zone_numbers, use_cache=True)
-                    system_items = await self._async_optional_probe(
-                        "system_items",
-                        self.api.async_get_system_items(
-                            self._features, self._zone_numbers, culture=self._culture
-                        ),
-                        status,
-                    )
+                    if write_refresh:
+                        previous = self.data.discovery if self.data is not None else None
+                        system_items = previous.system_items if previous is not None else {}
+                        if previous is not None and "system_items" in previous.probe_status:
+                            status["system_items"] = previous.probe_status["system_items"]
+                    else:
+                        system_items = await self._async_optional_probe(
+                            "system_items",
+                            self.api.async_get_system_items(
+                                self._features, self._zone_numbers, culture=self._culture
+                            ),
+                            status,
+                        )
 
-                if self._skip_slow_discovery_once:
+                if write_refresh:
                     pass
                 elif self._polls_until_slow_discovery <= 0:
                     if not self._initial_discovery_complete:
@@ -694,19 +819,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
 
             if self.unloading:
                 raise UpdateFailed("The integration is unloading")
-            discovery = replace(
-                self._slow_discovery,
-                features=self._features,
-                features_response=self.api.last_features_response,
-                system_items=system_items or {},
-                probe_status=status,
-                system_type=system_type,
-            )
-            updated_data = replace(data, discovery=discovery)
-            self._transient_failure_count = 0
-            self.last_successful_update = data.captured_at
-            self._notify_successful_update_listeners()
-            if start_slow_discovery:
+            updated_data = self._core_snapshot(data, system_items or {}, status, system_type)
+            self._record_snapshot(updated_data)
+            if write_refresh and system_type != SYSTEM_TYPE_GALEVO:
+                self._start_background_discovery(
+                    lambda: self._async_refresh_bsb_system_items(updated_data)
+                )
+            elif start_slow_discovery:
                 self.start_deferred_discovery(refresh_core=refresh_core)
             return updated_data
         except ElcoAuthenticationError as err:
@@ -724,7 +843,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     str(err),
                     retry_after=delay,
                 ) from err
-            if self._is_transient_response_error(err):
+            if isinstance(err, ElcoGalevoPlantDataError) or self._is_transient_response_error(err):
                 raise UpdateFailed(
                     str(err),
                     retry_after=self._next_transient_recovery_delay(),
@@ -872,10 +991,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         try:
             await write()
         except (ElcoConnectionError, ElcoResponseError) as err:
-            if isinstance(err, ElcoResponseError) and (
-                err.status == 429 or err.retry_after is not None
-            ):
-                self._record_gateway_backoff(err.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
+            self._record_response_backoff(err)
             if not self._is_ambiguous_write_error(err):
                 raise
             _LOGGER.debug(
@@ -890,7 +1006,8 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                 ) from err
             try:
                 reconciled = await reconcile()
-            except ElcoApiError:
+            except ElcoApiError as read_error:
+                self._record_response_backoff(read_error)
                 raise HomeAssistantError(
                     f"{description} may have been applied, but its result could not be verified; "
                     "check the controller or official application"
@@ -903,10 +1020,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             try:
                 verified = await reconcile()
             except ElcoApiError as err:
-                if isinstance(err, ElcoResponseError) and (
-                    err.status == 429 or err.retry_after is not None
-                ):
-                    self._record_gateway_backoff(err.retry_after or _DEFAULT_RATE_LIMIT_DELAY)
+                self._record_response_backoff(err)
                 raise HomeAssistantError(
                     f"{description} was acknowledged, but the outcome could not be verified"
                 ) from err
@@ -917,17 +1031,14 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         return None
 
     async def _async_refresh_after_write(self) -> None:
-        """Refresh core state without launching optional discovery traffic."""
-        if self._gateway_backoff():
+        """Refresh core state without waiting for BSB diagnostics after a write."""
+        if self.unloading or self._gateway_backoff():
             return
-        self._skip_slow_discovery_once = True
+        self._write_refresh_task = asyncio.current_task()
         try:
-            if self._system_type() == SYSTEM_TYPE_GALEVO:
-                await self.async_refresh()
-            else:
-                await self.async_request_refresh()
+            await self.async_refresh()
         finally:
-            self._skip_slow_discovery_once = False
+            self._write_refresh_task = None
 
     async def _async_set_bsb_value(
         self,
@@ -1152,25 +1263,16 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     replace(
                         plant, dhw_mode=replace(plant.dhw_mode, value=mode)
                     ).galevo_dhw_temperature_change(comfort, reduced)
-                    observed: ElcoData | None = None
-
-                    async def read_mode() -> ElcoData:
-                        nonlocal observed
-                        observed = await self._async_fresh_data()
-                        return observed
-
-                    failure = await self._async_write_with_reconciliation(
+                    observed, failure = await self._async_galevo_write_and_read(
                         write=lambda: self.api.async_set_galevo_dhw_settings(
                             plant, comfort=None, reduced=None, mode=mode
                         ),
-                        reconcile=read_mode,
                         matches=lambda state: state.plant.dhw_mode.value == mode,
                         description="Domestic hot water mode change",
-                        verify_success=True,
                     )
+                    self._publish_galevo_snapshot(observed)
                     if failure is not None:
                         raise failure
-                    assert observed is not None
                     plant = observed.plant
                     changed_mode = True
                 _, expected = plant.galevo_dhw_temperature_change(comfort, reduced)
@@ -1196,20 +1298,62 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             await self._async_galevo_command("Domestic hot water change", write, matches)
         except HomeAssistantError as err:
             if changed_mode:
-                await self._async_refresh_after_write()
                 raise HomeAssistantError(
                     f"Hot-water mode changed, but the temperature change failed or was "
                     f"unconfirmed: {err}"
                 ) from err
             raise
 
+    async def _async_galevo_write_and_read(
+        self,
+        *,
+        write: Callable[[], Awaitable[Any]],
+        matches: Callable[[ElcoData], bool],
+        description: str,
+    ) -> tuple[ElcoData, HomeAssistantError | None]:
+        """Verify once and allow one more read if Remocon still shows the old value."""
+        observed: ElcoData | None = None
+
+        async def reconcile() -> ElcoData:
+            nonlocal observed
+            try:
+                observed = await self._async_fresh_data()
+                if not matches(observed):
+                    observed = await self._async_fresh_data()
+                return observed
+            except ElcoAuthenticationError:
+                if self.config_entry is not None and not self.unloading:
+                    self.config_entry.async_start_reauth(self.hass)
+                raise
+
+        failure = await self._async_write_with_reconciliation(
+            write=write,
+            reconcile=reconcile,
+            matches=matches,
+            description=description,
+            verify_success=True,
+        )
+        assert observed is not None
+        return observed, failure
+
+    def _publish_galevo_snapshot(self, data: ElcoData) -> None:
+        """Publish the complete command readback while still holding the gateway lock."""
+        if self.unloading:
+            return
+        snapshot = self._core_snapshot(
+            data,
+            data.discovery.system_items,
+            {**self._slow_discovery.probe_status, "system_items": "available"},
+            SYSTEM_TYPE_GALEVO,
+        )
+        self._record_snapshot(snapshot)
+        self.async_set_updated_data(snapshot)
+
     async def _async_galevo_command(
         self,
         description: str,
         write: Callable[[ElcoData], Awaitable[Any]],
         matches: Callable[[ElcoData], bool],
-        *,
-        zone_numbers: list[int] | None = None,
     ) -> None:
         """Validate, send and verify a Galevo command under the gateway lock."""
         if self._system_type() != SYSTEM_TYPE_GALEVO:
@@ -1218,15 +1362,13 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             try:
                 await self._async_cancel_deferred_discovery()
                 async with self._gateway_lock:
-                    fresh = await self._async_fresh_data(zone_numbers)
-                    failure = await self._async_write_with_reconciliation(
+                    fresh = await self._async_fresh_data()
+                    observed, failure = await self._async_galevo_write_and_read(
                         write=lambda: write(fresh),
-                        reconcile=lambda: self._async_fresh_data(zone_numbers),
                         matches=matches,
                         description=description,
-                        verify_success=True,
                     )
-                await self._async_refresh_after_write()
+                    self._publish_galevo_snapshot(observed)
                 if failure is not None:
                     raise failure
             except ValueError as err:
@@ -1236,6 +1378,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                     self.config_entry.async_start_reauth(self.hass)
                 raise HomeAssistantError("Remocon authentication failed") from err
             except ElcoApiError as err:
+                self._record_response_backoff(err)
                 raise HomeAssistantError(str(err)) from err
 
     async def async_set_plant_mode(self, mode: int) -> None:

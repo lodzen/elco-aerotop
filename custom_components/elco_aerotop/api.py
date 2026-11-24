@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, date, datetime, time
 from email.utils import parsedate_to_datetime
+from functools import partial
 from html import unescape
 from math import isfinite
 from typing import Any, TypeVar
@@ -85,6 +86,7 @@ from .models import (
     ZoneState,
     bsb_point_available,
     controller_system_type,
+    galevo_item_available,
     galevo_item_writable,
 )
 
@@ -142,6 +144,10 @@ class ElcoResponseError(ElcoApiError):
         self.status = status
         self.retry_after = retry_after
         self.ambiguous = ambiguous
+
+
+class ElcoGalevoPlantDataError(ElcoResponseError):
+    """A Galevo plant read returned no usable data."""
 
 
 def _retry_after_seconds(response: ClientResponse) -> float | None:
@@ -574,6 +580,8 @@ class ElcoApiClient:
         else:
             returned_items = []
         if not isinstance(returned_items, list):
+            if galevo:
+                raise ElcoGalevoPlantDataError("Galevo system data returned invalid items")
             raise ElcoResponseError("System data returned invalid items")
 
         result: dict[str, dict[str, Any]] = {}
@@ -591,7 +599,7 @@ class ElcoApiClient:
                 continue
             result[f"{item['id']}:{zone_number}"] = item
         if galevo and not result:
-            raise ElcoResponseError("Galevo system data contained no requested items")
+            raise ElcoGalevoPlantDataError("Galevo system data contained no requested items")
         return result
 
     async def async_get_bsb_plant_data(self) -> dict[str, Any]:
@@ -1059,12 +1067,18 @@ class ElcoApiClient:
         features: dict[str, Any],
         zone_numbers: list[int],
         culture: str = "en",
+        *,
+        allow_partial_zones: bool = False,
     ) -> tuple[ElcoData, dict[str, dict[str, Any]]]:
-        """Fetch one complete Galevo snapshot: dataItems plus per-zone state.
+        """Read Galevo plant and zone data.
 
-        Uses the same bounded retry policy as the BSB snapshot so transient
-        5xx responses do not fail the whole poll.
+        Polling can isolate a failed zone. Command reads use a complete
+        snapshot with a shared deadline and retry policy.
         """
+        if allow_partial_zones:
+            return await self._async_get_galevo_data_once(
+                features, zone_numbers, culture, allow_partial_zones=True
+            )
         return await self._async_read_with_retry(
             "Galevo snapshot",
             lambda: self._async_get_galevo_data_once(features, zone_numbers, culture),
@@ -1076,6 +1090,8 @@ class ElcoApiClient:
         features: dict[str, Any],
         zone_numbers: list[int],
         culture: str = "en",
+        *,
+        allow_partial_zones: bool = False,
     ) -> tuple[ElcoData, dict[str, dict[str, Any]]]:
         """Fetch one Galevo snapshot attempt: dataItems plus per-zone state.
 
@@ -1086,7 +1102,21 @@ class ElcoApiClient:
         per-zone R2 call was therefore dropped from the poll; R2 is only
         used for Features (cached) and ``SetData`` writes.
         """
-        system_items = await self.async_get_system_items(features, zone_numbers, culture=culture)
+        read_items = partial(self.async_get_system_items, features, zone_numbers, culture=culture)
+        if allow_partial_zones:
+            try:
+                system_items = await self._async_read_with_retry("Galevo plant data", read_items)
+            except ElcoResponseError as err:
+                if err.ambiguous and err.status is None and err.retry_after is None:
+                    raise ElcoGalevoPlantDataError(str(err)) from err
+                raise
+            if not any(
+                key.endswith(":0") and galevo_item_available(item) and item.get("value") is not None
+                for key, item in system_items.items()
+            ):
+                raise ElcoGalevoPlantDataError("Galevo system data contained no usable plant items")
+        else:
+            system_items = await read_items()
         feature_zones: dict[int, dict[str, Any]] = {}
         for zone in features.get("zones", []):
             if not isinstance(zone, dict):
@@ -1098,8 +1128,17 @@ class ElcoApiClient:
 
         zones: dict[int, ZoneState] = {}
         raw_responses: list[Any] = []
+        unavailable_zones = []
         for zone_number in zone_numbers:
-            raw = await self.async_get_galevo_zone(zone_number)
+            raw = (
+                await self._async_poll_galevo_zone(zone_number)
+                if allow_partial_zones
+                else await self.async_get_galevo_zone(zone_number)
+            )
+            if raw is None:
+                unavailable_zones.append(zone_number)
+                zones[zone_number] = ZoneState.from_galevo(zone_number, {}, {})
+                continue
             raw_responses.append(raw)
             zones[zone_number] = ZoneState.from_galevo(
                 zone_number,
@@ -1107,16 +1146,38 @@ class ElcoApiClient:
                 system_items,
                 feature_zones.get(zone_number),
             )
+        if unavailable_zones:
+            unavailable_suffixes = tuple(f":{zone}" for zone in unavailable_zones)
+            system_items = {
+                key: item
+                for key, item in system_items.items()
+                if not key.endswith(unavailable_suffixes)
+            }
         data = ElcoData(
             self.gateway_id,
             PlantState.from_galevo(system_items),
             zones,
             get_data_responses=raw_responses,
+            unavailable_zones=tuple(unavailable_zones),
         )
         # Keep the merged item map for Galevo data-item writes: the set
         # request echoes the full item plus prevValue.
         self.last_system_items = system_items
         return data, system_items
+
+    async def _async_poll_galevo_zone(self, zone_number: int) -> dict[str, Any] | None:
+        """Read one zone with its own deadline and isolate zone-level failures."""
+        try:
+            return await self._async_read_with_retry(
+                f"Galevo zone {zone_number}", partial(self.async_get_galevo_zone, zone_number)
+            )
+        except (ElcoConnectionError, ElcoResponseError) as err:
+            if isinstance(err, ElcoResponseError) and (
+                err.status == 429 or err.retry_after is not None
+            ):
+                raise
+            _LOGGER.debug("Galevo zone %s data unavailable: %s", zone_number, err)
+            return None
 
     async def async_get_menu_items(
         self,
@@ -1218,14 +1279,15 @@ class ElcoApiClient:
         features: dict[str, Any],
         *,
         has_cooling: bool,
+        retry_auth: bool = False,
     ) -> Any:
         """Fetch read-only metering data when the plant supports it."""
         payload = await self._request_payload(
             "POST",
             METERING_PATH.format(gateway_id=self.gateway_id),
             body={"features": features, "hasCooling": has_cooling},
-            retry_auth=False,
-            invalidate_auth=False,
+            retry_auth=retry_auth,
+            invalidate_auth=retry_auth,
         )
         return payload.get("data", payload) if isinstance(payload, dict) else payload
 

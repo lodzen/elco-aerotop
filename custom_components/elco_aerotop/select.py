@@ -20,7 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ElcoDhwModeSelect(ElcoAerotopEntity, SelectEntity):
-    _attr_name = "Domestic hot water mode"
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
@@ -49,9 +48,8 @@ class ElcoZoneModeSelect(ElcoAerotopEntity, SelectEntity):
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, zone_number: int) -> None:
-        super().__init__(coordinator, f"zone_{zone_number}_mode")
+        super().__init__(coordinator, "mode", zone_number=zone_number)
         self._zone_number = zone_number
-        self._attr_name = f"Zone {zone_number} mode"
 
     @property
     def current_option(self) -> str | None:
@@ -101,8 +99,6 @@ def _plant_mode_options(data) -> list[tuple[int, str]]:
 
 class ElcoPlantModeSelect(ElcoAerotopEntity, SelectEntity):
     """Galevo plant mode with fresh validation and readback."""
-
-    _attr_name = "Plant mode"
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
         super().__init__(coordinator, "plant_mode")
@@ -223,12 +219,11 @@ class ElcoGalevoItemSelect(ElcoAerotopEntity, SelectEntity):
 class ElcoHolidayOperatingLevelSelect(ElcoAerotopEntity, SelectEntity):
     """Control the BSB heating-circuit 1 holiday operating level."""
 
-    _attr_name = "Zone 1 holiday operating level"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = list(HOLIDAY_OPERATING_LEVEL_OPTIONS)
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
-        super().__init__(coordinator, "zone_1_holiday_operating_level")
+        super().__init__(coordinator, "holiday_operating_level", zone_number=1)
 
     @property
     def current_option(self) -> str | None:

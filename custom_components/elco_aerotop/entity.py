@@ -56,13 +56,36 @@ class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
 
     _attr_has_entity_name = True
 
+    @property
+    def available(self) -> bool:
+        """Require a successful coordinator update for this entity's scope."""
+        return super().available and self._elco_zone_number not in (
+            self.coordinator.data.unavailable_zones
+        )
+
     def has_registry_entry(self, entity_domain: str) -> bool:
         """Return whether this entity already has a persistent Home Assistant ID."""
         registry = er.async_get(self.coordinator.hass)
         return registry.async_get_entity_id(entity_domain, DOMAIN, self._attr_unique_id) is not None
 
-    def __init__(self, coordinator: ElcoDataUpdateCoordinator, key: str) -> None:
+    def __init__(
+        self,
+        coordinator: ElcoDataUpdateCoordinator,
+        key: str,
+        *,
+        zone_number: int | None = None,
+        translation_key: str | None = None,
+        translation_placeholders: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(coordinator)
+        self._elco_zone_number = zone_number
+        if zone_number is not None:
+            translation_key = translation_key or f"zone_{key}"
+            translation_placeholders = {"zone": str(zone_number)}
+            key = f"zone_{zone_number}_{key}"
+        self._attr_translation_key = translation_key or key
+        if translation_placeholders is not None:
+            self._attr_translation_placeholders = translation_placeholders
         self._attr_unique_id = f"{coordinator.api.gateway_id}_{key}"
         metadata = coordinator.data.discovery.plant_metadata
         header = coordinator.data.discovery.plant_header

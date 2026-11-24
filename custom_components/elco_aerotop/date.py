@@ -24,9 +24,8 @@ class ElcoHolidayUntilDate(ElcoAerotopEntity, DateEntity):
     _attr_icon = "mdi:calendar-end"
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, zone_number: int) -> None:
-        super().__init__(coordinator, f"zone_{zone_number}_holiday_until")
+        super().__init__(coordinator, "holiday_until", zone_number=zone_number)
         self._zone_number = zone_number
-        self._attr_name = f"Zone {zone_number} holiday until"
 
     @property
     @override
@@ -59,7 +58,6 @@ class ElcoGalevoHolidayDate(ElcoAerotopEntity, DateEntity):
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, boundary: str) -> None:
         super().__init__(coordinator, f"holiday_{boundary}")
         self._boundary = boundary
-        self._attr_name = f"Pending holiday {boundary}"
         self._attr_icon = "mdi:calendar-start" if boundary == "start" else "mdi:calendar-end"
 
     @property

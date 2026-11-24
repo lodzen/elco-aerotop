@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant.common import MockConfigEntry
@@ -91,6 +92,137 @@ def existing_entry(hass):
         config_entry=entry,
     )
     return entry, climate.entity_id, disabled.entity_id
+
+
+@pytest.fixture
+async def bsb_hot_water(hass, monkeypatch):
+    api, _ = fake_gateway(monkeypatch)
+    entry = make_entry(hass)
+    raw = FIXTURE["get_data"]
+    target = raw["plantData"]["dhwComfortTemp"]["value"]
+
+    def read(_zones, *, use_cache=True):
+        plant = PlantState.parse(
+            {
+                **raw["plantData"],
+                "dhwComfortTemp": {**raw["plantData"]["dhwComfortTemp"], "value": target},
+            }
+        )
+        return ElcoData(GATEWAY_ID, plant, {1: ZoneState.parse(1, raw["zoneData"])})
+
+    def write(_plant, *, comfort, reduced, mode):
+        nonlocal target
+        target = comfort
+
+    api.async_get_data.side_effect = read
+    api.async_set_dhw.side_effect = write
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    api.async_get_data.reset_mock()
+    api.async_get_system_items.reset_mock()
+    heater = er.async_get(hass).async_get_entity_id(
+        "water_heater", DOMAIN, f"{GATEWAY_ID}_domestic_hot_water"
+    )
+    return api, entry, heater
+
+
+@pytest.mark.parametrize("probe_fails", [False, True], ids=["success", "rate-limited"])
+async def test_bsb_hot_water_updates_before_the_optional_read(hass, bsb_hot_water, probe_fails):
+    api, entry, heater = bsb_hot_water
+    coordinator = entry.runtime_data
+    previous = coordinator.data
+    started = asyncio.Event()
+    release = asyncio.Event()
+    new_items = {"SyntheticReading:0": {"value": 17}}
+
+    async def optional_read(*args, **kwargs):
+        started.set()
+        await release.wait()
+        if probe_fails:
+            raise ElcoResponseError("rate limited", status=429, retry_after=120)
+        return new_items
+
+    api.async_get_system_items.side_effect = optional_read
+    try:
+        async with asyncio.timeout(2):
+            await hass.services.async_call(
+                "water_heater",
+                "set_temperature",
+                {"entity_id": heater, "temperature": 47},
+                blocking=True,
+            )
+            await started.wait()
+        api.async_set_dhw.assert_awaited_once()
+        assert [(c.args, c.kwargs) for c in api.async_get_data.await_args_list] == [
+            (([1],), {"use_cache": False}),
+            (([1],), {"use_cache": True}),
+        ]
+        assert hass.states.get(heater).attributes["temperature"] == 47
+        assert coordinator.data.discovery.system_items == previous.discovery.system_items
+        core_timestamp = coordinator.last_successful_update
+        assert core_timestamp > previous.captured_at
+    finally:
+        release.set()
+
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(heater).attributes["temperature"] == 47
+    assert coordinator.last_update_success
+    assert coordinator.last_successful_update == core_timestamp
+    assert coordinator.data.discovery.system_items == ({} if probe_fails else new_items)
+    if probe_fails:
+        assert coordinator.data.discovery.probe_status["system_items"] == (
+            "unavailable:ElcoResponseError"
+        )
+        assert coordinator._gateway_backoff() > 0
+    else:
+        assert coordinator.data.discovery.probe_status["system_items"] == "available"
+
+
+async def test_bsb_new_write_cancels_old_optional_read_and_unload_cancels_the_next(
+    hass, bsb_hot_water
+):
+    api, entry, heater = bsb_hot_water
+    coordinator = entry.runtime_data
+    started = [asyncio.Event(), asyncio.Event()]
+    cancelled = [asyncio.Event(), asyncio.Event()]
+
+    async def blocked_read(*args, **kwargs):
+        index = api.async_get_system_items.await_count - 1
+        started[index].set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled[index].set()
+
+    api.async_get_system_items.side_effect = blocked_read
+    async with asyncio.timeout(2):
+        await coordinator.async_set_dhw(comfort=47)
+        await started[0].wait()
+        await coordinator.async_set_dhw(comfort=48)
+        await started[1].wait()
+        assert cancelled[0].is_set()
+        assert hass.states.get(heater).attributes["temperature"] == 48
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert cancelled[1].is_set()
+    assert api.async_set_dhw.await_count == 2
+
+
+async def test_bsb_failed_core_read_does_not_start_optional_read(hass, bsb_hot_water):
+    api, entry, heater = bsb_hot_water
+    coordinator = entry.runtime_data
+    previous = coordinator.data
+    api.async_get_data.side_effect = [
+        previous,
+        ElcoConnectionError("core refresh failed", timed_out=True),
+    ]
+
+    await coordinator.async_set_dhw(comfort=47)
+
+    assert api.async_set_dhw.await_count == 1
+    api.async_get_system_items.assert_not_awaited()
+    assert coordinator.data is previous
+    assert coordinator.last_successful_update == previous.captured_at
+    assert hass.states.get(heater).state == "unavailable"
 
 
 async def test_existing_bsb_entry_on_real_ha(hass, monkeypatch):

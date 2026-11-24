@@ -22,14 +22,12 @@ class ElcoGalevoItemSwitch(ElcoAerotopEntity, SwitchEntity):
         coordinator: ElcoDataUpdateCoordinator,
         item_id: str,
         key: str,
-        name: str,
         *,
         zone_number: int = 0,
     ) -> None:
         super().__init__(coordinator, key)
         self._item_id = item_id
         self._zone_number = zone_number
-        self._attr_name = name
 
     def _item(self) -> dict | None:
         return self.coordinator.data.discovery.system_item(self._item_id, self._zone_number)
@@ -71,7 +69,6 @@ class ElcoGalevoHolidaySwitch(ElcoAerotopEntity, SwitchEntity):
     sends the reset body.
     """
 
-    _attr_name = "Holiday"
     _attr_icon = "mdi:beach"
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
@@ -123,10 +120,10 @@ def _create_entities(
     if not GALEVO_WRITES_ENABLED or coordinator.data.discovery.system_type != SYSTEM_TYPE_GALEVO:
         return
     entities: list[SwitchEntity] = []
-    for item_id, key, name in (
-        ("IsQuite", "quiet_mode", "Quiet mode"),
-        ("IsDhwBoost", "domestic_hot_water_boost", "Domestic hot water boost"),
-        ("AutomaticThermoregulation", "automatic_thermoregulation", "Automatic thermoregulation"),
+    for item_id, key in (
+        ("IsQuite", "quiet_mode"),
+        ("IsDhwBoost", "domestic_hot_water_boost"),
+        ("AutomaticThermoregulation", "automatic_thermoregulation"),
     ):
         item = coordinator.data.discovery.system_item(item_id)
         if (
@@ -134,7 +131,7 @@ def _create_entities(
             and galevo_item_writable(item)
             and galevo_item_switch_value(item) is not None
         ):
-            entities.append(ElcoGalevoItemSwitch(coordinator, item_id, key, name))
+            entities.append(ElcoGalevoItemSwitch(coordinator, item_id, key))
     if galevo_item_switch_value(coordinator.data.discovery.system_item("Holiday")) is not None:
         entities.append(ElcoGalevoHolidaySwitch(coordinator))
     async_add_entities(entities)

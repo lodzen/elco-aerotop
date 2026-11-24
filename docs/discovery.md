@@ -17,7 +17,7 @@ paths and value types in `response_schema`.
 | Plant and zones | `PlantHomeBsb/GetData` snapshots and optional system data items | Mobile `dataItems` and per-zone responses |
 | Weekly programs | `PlantTimeProgBsb/GetData` | Mobile `timeProgs` |
 | Controller details | Plant-owner payload, maintenance, automated monitoring, `bsbPlantData`, and boiler details | Mobile menu items and bus device inventory |
-| Energy | Cloud metering and ten fixed annual records when returned | Heating, hot-water, and cooling consumption series |
+| Energy | Cloud metering and ten fixed annual records when returned | Heating, hot-water, and cooling consumption series, plus the previous-year estimate from supported web metering |
 | Extra datapoints | Isolated, allowlisted groups for heating-circuit settings, line 7000 messages, and heat-pump data | Returned mobile fields and feature-selected menu items |
 
 Slow controller-backed families run after the first valid core snapshot, including after
@@ -34,6 +34,11 @@ otherwise later discovery can recover without affecting core entity availability
 BSB annual history is queried independently of cloud metering. Gateways can expose the fixed
 records while reporting `hasMetering: false`. The diagnostic export redacts Galevo bus-device
 serials, including the vendor's `sn` field.
+
+Galevo publishes its other optional data before attempting web metering. This read follows
+the deferred discovery schedule and contributes only the estimated factor and year. The
+`metering` probe status records failures or missing full-year coverage independently of
+the gateway's current heating and hot-water readings.
 
 The diagnostics implementation recursively redacts configured credentials and gateway IDs,
 common identity and location fields, serial numbers, technician details, and matching identifiers

@@ -83,6 +83,7 @@ numbers, addresses, or other personal data.
 | Low-level BSB 700–730 and cooling 8786/8787 values | Diagnostics | Disabled | Controller-level troubleshooting |
 | BSB annual energy records | Diagnostics | Disabled | Fixed historical records |
 | Galevo energy consumption reports | Sensors | Enabled | Consumption over a stated time window |
+| Galevo estimated JAZ | Sensors | Enabled, when complete data is returned | Heating and hot-water performance for the previous calendar year |
 
 Entity category and entity domain answer different questions. The writable holiday operating
 level is a Configuration select; its older sensor counterpart remains a read-only Diagnostic for
@@ -405,6 +406,34 @@ when the service returns the corresponding series. The periods are the last 24 h
 last 7 days, last complete month, and last 12 complete months. Missing buckets leave the
 affected period unavailable. Each value is a windowed consumption reading in kWh.
 
+### Galevo estimated yearly performance factor (JAZ)
+
+**Estimated JAZ – previous calendar year** divides the total heat produced for space heating
+and domestic hot water by the total electricity used for those same services over January
+through December of the prior year. For example, 9,000 kWh of heat and 3,000 kWh of electricity
+give an estimated JAZ of 3.00. The ratio combines the kWh totals across all months and uses.
+Its `year` attribute shows the year represented by the value. The calculation excludes cooling.
+
+The source is the unrounded **Energy produced** and **Electricity** data from Remocon web
+metering. These figures are Remocon estimates. Any supplemental consumption is reflected to
+the extent that Remocon includes it in the heating and hot-water electricity series. The
+rolling **last 12 complete months** consumption sensors use a separate report and may span
+parts of two calendar years.
+
+The sensor first appears after Remocon reports metering support, history reaching at least
+January of the target year, and 12 distinct matching monthly buckets for each of the four
+series. Each bucket must contain a finite, nonnegative kWh value, and total annual electricity
+must be positive. Explicit zero-consumption months can be valid. Missing months, ambiguous
+duplicate rows, or unavailable web metering leave the estimate unavailable. An already
+registered entity keeps its ID and recovers when a valid report returns.
+
+The web report is an optional background read after normal discovery. If the sensor is
+missing, check **Energy produced** and **Electricity** in the Remocon web portal for the
+previous year, then check the `metering` probe status in the integration's redacted
+diagnostics. `unavailable:incomplete_previous_year` means the response didn't contain a
+usable complete year. The [dashboard guide](dashboard.md#add-galevo-mode-and-energy) includes
+an optional JAZ tile.
+
 ### BSB annual records
 
 BSB exposes ten fixed history slots with eight fields each. These 80 diagnostic entities are
@@ -488,6 +517,7 @@ or out-of-service flag affects only its corresponding child entity.
 | The named season of a Galevo zone temperature number is inactive | The control is unavailable until that season becomes active |
 | An existing Galevo off-season comfort control is retired | Its entity ID is preserved and the control stays unavailable |
 | A stable capability exists but its current reading is out of service | Entity stays registered and is unavailable until recovery |
+| A Galevo zone read fails during a normal poll | The affected zone is unavailable. Fresh plant and healthy zone values stay available, and a recovery poll is scheduled |
 | An optional endpoint is unsupported, unauthorized, slow, or changed | Only that family is unavailable; core entities continue |
 | Entity is disabled by default | It exists in the registry but is not loaded until enabled |
 | Installation already has an enabled/disabled choice | Home Assistant preserves it on upgrade |
@@ -495,6 +525,14 @@ or out-of-service flag affects only its corresponding child entity.
 Diagnostics capture every key/value returned by each JSON endpoint the integration calls. That is
 not every theoretical BSB address: Remocon does not publish the complete map, and unsupported
 addresses can block or time out a gateway.
+
+## Display names and entity IDs
+
+Home Assistant uses the configured language for the integration's translated display names.
+An existing entity ID is retained when display names change, including a switch between
+English and German. Automations and dashboards referencing those IDs keep working. Home
+Assistant preserves custom names and enabled/disabled choices. For an entity created for the
+first time, the generated ID can reflect the active language and device name.
 
 ## Enabling and disabling entities
 

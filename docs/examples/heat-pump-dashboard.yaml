@@ -1,0 +1,79 @@
+# Complete Home Assistant dashboard. Replace each elco_example ID before use.
+title: Heat pump
+views:
+  - title: Heat pump
+    path: heat-pump
+    icon: mdi:heat-pump
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Temperature controls
+            icon: mdi:thermometer
+          - type: thermostat
+            name: Hot water
+            entity: water_heater.elco_example_domestic_hot_water
+            grid_options:
+              columns: 6
+          - type: thermostat
+            name: Heating
+            entity: climate.elco_example_zone_1_thermostat
+            grid_options:
+              columns: 6
+      - type: grid
+        cards:
+          - type: heading
+            heading: Hot-water temperature
+            icon: mdi:water-thermometer
+          - type: tile
+            name: Tank temperature
+            entity: sensor.elco_example_domestic_hot_water_temperature
+          - type: history-graph
+            title: Last 24 hours
+            hours_to_show: 24
+            entities:
+              - entity: sensor.elco_example_domestic_hot_water_temperature
+                name: Current
+            grid_options:
+              columns: full
+      - type: grid
+        cards:
+          - type: heading
+            heading: Status
+            icon: mdi:list-status
+          - type: history-graph
+            title: Heating activity
+            hours_to_show: 24
+            entities:
+              - entity: binary_sensor.elco_example_heat_pump_running
+                name: Heat pump
+              - entity: binary_sensor.elco_example_zone_1_heat_request
+                name: Zone 1 request
+            grid_options:
+              columns: full
+          - type: tile
+            name: Heat pump
+            entity: binary_sensor.elco_example_heat_pump_running
+          - type: tile
+            name: Gateway
+            entity: binary_sensor.elco_example_gateway_online
+          - type: tile
+            name: Last successful update
+            entity: sensor.elco_example_last_successful_update
+            grid_options:
+              columns: full
+          - type: button
+            name: Refresh heat pump status
+            icon: mdi:refresh
+            entity: button.elco_example_refresh
+            show_state: false
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.elco_example_refresh
+            grid_options:
+              columns: full
+              rows: 1

@@ -33,14 +33,13 @@ class ElcoTemperatureNumber(ElcoAerotopEntity, NumberEntity):
         self,
         coordinator: ElcoDataUpdateCoordinator,
         key: str,
-        name: str,
         variable_fn,
         write_fn,
         *,
         available_fn: Callable[[ElcoData], bool] | None = None,
+        zone_number: int | None = None,
     ) -> None:
-        super().__init__(coordinator, key)
-        self._attr_name = name
+        super().__init__(coordinator, key, zone_number=zone_number)
         self._variable_fn = variable_fn
         self._write_fn = write_fn
         self._available_fn = available_fn
@@ -91,7 +90,6 @@ class ElcoBsbNumber(ElcoAerotopEntity, NumberEntity):
     ) -> None:
         super().__init__(coordinator, spec.key)
         self._spec = spec
-        self._attr_name = spec.name
         if spec.temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -144,14 +142,12 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
         key: str,
         item_id: str,
         zone_number: int,
-        name: str,
         *,
         temperature: bool = True,
     ) -> None:
-        super().__init__(coordinator, key)
+        super().__init__(coordinator, key, zone_number=zone_number)
         self._item_id = item_id
         self._zone_number = zone_number
-        self._attr_name = name
         self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         if temperature:
             self._attr_device_class = NumberDeviceClass.TEMPERATURE
@@ -193,7 +189,7 @@ class ElcoGalevoItemNumber(ElcoAerotopEntity, NumberEntity):
 
 
 # Galevo per-zone items the APK exposes as user settings (dataItems/set).
-# (item id, key/name suffix, temperature unit)
+# (item id, key suffix, temperature unit)
 _GALEVO_ZONE_NUMBER_ITEMS: tuple[tuple[str, str, bool], ...] = (
     ("HeatingFlowTemp", "heating_flow_temperature", True),
     ("HeatingFlowOffset", "heating_flow_offset", False),
@@ -219,10 +215,8 @@ def _zone_temperature_number(
     retired_off_season: bool = False,
 ) -> ElcoTemperatureNumber:
     setting = "reduced" if reduced else "comfort"
-    label = f"{'cooling ' if cooling else ''}{setting} temperature"
     kind = f"{'cooling_' if cooling else ''}{setting}"
     if retired_off_season:
-        label = f"off-season {'cooling' if cooling else 'heating'} {setting} temperature"
         suffix = f"off_season_{'cooling' if cooling else 'heating'}_{setting}_temperature"
     else:
         suffix = f"{kind}_temperature"
@@ -245,10 +239,10 @@ def _zone_temperature_number(
 
     return ElcoTemperatureNumber(
         coordinator,
-        f"zone_{zone_number}_{suffix}",
-        f"Zone {zone_number} {label}",
+        suffix,
         variable,
         write,
+        zone_number=zone_number,
         available_fn=(
             available if coordinator.data.discovery.system_type == SYSTEM_TYPE_GALEVO else None
         ),
@@ -269,7 +263,6 @@ def _create_entities(
         scheduled_comfort = ElcoTemperatureNumber(
             coordinator,
             "dhw_scheduled_comfort_temperature",
-            "Scheduled hot water comfort temperature",
             lambda data: data.plant.dhw_comfort_temperature,
             coordinator.async_set_scheduled_dhw_comfort_temperature,
             available_fn=supports_scheduled_dhw_comfort_write,
@@ -284,7 +277,6 @@ def _create_entities(
         dhw_comfort = ElcoTemperatureNumber(
             coordinator,
             "dhw_comfort_temperature",
-            "Domestic hot water comfort temperature",
             lambda data: data.plant.dhw_target_temperature,
             lambda value: coordinator.async_set_dhw(comfort=value),
             available_fn=(
@@ -300,7 +292,6 @@ def _create_entities(
             ElcoTemperatureNumber(
                 coordinator,
                 "dhw_reduced_temperature",
-                "Domestic hot water reduced temperature",
                 lambda data: data.plant.dhw_reduced_temperature,
                 lambda value: coordinator.async_set_dhw(reduced=value),
                 available_fn=(
@@ -348,14 +339,12 @@ def _create_entities(
                 item = coordinator.data.discovery.system_item(item_id, zone_number)
                 if item is None or not galevo_item_writable(item):
                     continue
-                label = suffix.replace("_", " ")
                 entities.append(
                     ElcoGalevoItemNumber(
                         coordinator,
-                        f"zone_{zone_number}_{suffix}",
+                        suffix,
                         item_id,
                         zone_number,
-                        f"Zone {zone_number} {label}",
                         temperature=is_temperature,
                     )
                 )

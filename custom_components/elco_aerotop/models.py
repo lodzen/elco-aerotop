@@ -8,6 +8,8 @@ from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any
 
+from .metering import GalevoAnnualMetering
+
 
 def _first(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
@@ -847,6 +849,7 @@ class ReadOnlyDiscovery:
     # protocol the family supports (BSB point/address entities vs Galevo
     # data-item entities).
     system_type: int | None = None
+    galevo_annual_metering: GalevoAnnualMetering | None = None
 
     def system_item(self, item_id: str, zone: int = 0) -> dict[str, Any] | None:
         """Return a discovered system-data item."""
@@ -860,7 +863,7 @@ class ReadOnlyDiscovery:
 
 @dataclass(frozen=True, slots=True)
 class ElcoData:
-    """Complete coordinator snapshot."""
+    """Coordinator snapshot with any unavailable Galevo zones identified."""
 
     gateway_id: str
     plant: PlantState
@@ -868,3 +871,4 @@ class ElcoData:
     get_data_responses: list[dict[str, Any]] = field(default_factory=list)
     discovery: ReadOnlyDiscovery = field(default_factory=ReadOnlyDiscovery)
     captured_at: datetime = field(default_factory=lambda: datetime.now(UTC), compare=False)
+    unavailable_zones: tuple[int, ...] = ()

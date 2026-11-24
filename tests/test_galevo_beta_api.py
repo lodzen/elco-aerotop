@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
 from test_api import FakeResponse, FakeSession, login_responses
 
 from custom_components.elco_aerotop import api as api_module
-from custom_components.elco_aerotop.api import ElcoApiClient, ElcoResponseError
+from custom_components.elco_aerotop.api import (
+    ElcoApiClient,
+    ElcoAuthenticationError,
+    ElcoGalevoPlantDataError,
+    ElcoResponseError,
+)
 from custom_components.elco_aerotop.control_mapping import (
     dhw_operation,
     zone_hvac_mode,
@@ -25,6 +32,25 @@ def _client(*responses, family=3):
     client._mobile_token = "stale-token"
     client.last_features_response = {"data": {"plant": {"systemType": family}}}
     return client, session
+
+
+async def test_web_metering_renews_only_the_cookie_session():
+    report = {"oldestMonth": "January 2025", "asKwhRaw": {"histogramData": []}}
+    client, session = _client(
+        FakeResponse(status=401),
+        *login_responses(),
+        FakeResponse(json_data={"ok": True, "data": report}),
+    )
+    features = {"hasMetering": True}
+    assert await client.async_get_metering(features, has_cooling=False, retry_auth=True) == report
+    assert client._mobile_token == "stale-token"
+    requests = [call for call in session.calls if "/PlantMetering/GetData/" in call[1]]
+    assert len(requests) == 2
+    for method, _, kwargs in requests:
+        assert method == "POST"
+        assert kwargs["json"] == {"features": features, "hasCooling": False}
+        assert kwargs["headers"]["X-Requested-With"] == "XMLHttpRequest"
+        assert "ar.authToken" not in kwargs["headers"]
 
 
 async def test_galevo_renews_cookie_and_mobile_token_independently():
@@ -64,9 +90,153 @@ async def test_malformed_zone_cannot_publish_a_partial_snapshot():
     assert client.last_system_items == {}
 
 
+@pytest.mark.parametrize(
+    "zone_response",
+    [
+        FakeResponse(json_data={"data": {"message": "offline"}}),
+        FakeResponse(status=404),
+        TimeoutError(),
+    ],
+    ids=["bad-payload", "not-found", "timeout"],
+)
+async def test_poll_isolates_failed_zone_and_continues_with_later_zones(zone_response):
+    plant_response = FakeResponse(
+        json_data={
+            "data": {
+                "items": [
+                    {"id": "DhwStorageTemperature", "value": 47},
+                    {"id": "ZoneMeasuredTemp", "zone": 1, "value": 19},
+                ]
+            }
+        }
+    )
+    client, session = _client(
+        plant_response,
+        zone_response,
+        FakeResponse(json_data={"data": {"room": 21}}),
+    )
+
+    data, items = await client.async_get_galevo_data({}, [1, 2], allow_partial_zones=True)
+
+    assert data.plant.dhw_current_temperature == 47
+    assert data.unavailable_zones == (1,)
+    assert data.zones[1].room_temperature is None
+    assert data.zones[2].room_temperature == 21
+    assert data.get_data_responses == [{"room": 21}]
+    assert "ZoneMeasuredTemp:1" not in items
+    assert [url.rsplit("/", 1)[-1] for method, url, _ in session.calls if method == "GET"] == [
+        "1",
+        "2",
+    ]
+
+
+@pytest.mark.parametrize("recovered", [True, False])
+async def test_poll_retries_only_the_transiently_failing_zone(monkeypatch, recovered):
+    monkeypatch.setattr(api_module, "_SAFE_READ_RETRY_DELAY_SECONDS", 0)
+    retry = (
+        FakeResponse(json_data={"data": {"room": 20}}) if recovered else FakeResponse(status=503)
+    )
+    client, session = _client(
+        FakeResponse(json_data={"data": {"items": [{"id": "OutsideTemp", "value": 4}]}}),
+        FakeResponse(status=503),
+        retry,
+        FakeResponse(json_data={"data": {"room": 21}}),
+    )
+
+    data, _ = await client.async_get_galevo_data({}, [1, 2], allow_partial_zones=True)
+
+    assert len(session.calls) == 4
+    assert [url.rsplit("/", 1)[-1] for method, url, _ in session.calls if method == "GET"] == [
+        "1",
+        "1",
+        "2",
+    ]
+    assert data.unavailable_zones == (() if recovered else (1,))
+    assert data.zones[1].room_temperature == (20 if recovered else None)
+    assert data.zones[2].room_temperature == 21
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [],
+        [{"id": "ZoneMeasuredTemp", "zone": 1, "value": 21}],
+        [{"id": "OutsideTemp", "value": None}],
+        [{"id": "OutsideTemp", "value": 4, "available": False}],
+    ],
+    ids=["empty", "zones-only", "null-value", "unavailable"],
+)
+async def test_poll_requires_usable_plant_data_before_reading_zones(items):
+    client, session = _client(FakeResponse(json_data={"data": {"items": items}}))
+
+    with pytest.raises(ElcoGalevoPlantDataError):
+        await client.async_get_galevo_data({}, [1, 2], allow_partial_zones=True)
+
+    assert len(session.calls) == 1
+
+
+async def test_poll_classifies_non_json_plant_body_as_unusable():
+    client, session = _client(FakeResponse(json_data=ValueError("invalid JSON")))
+
+    with pytest.raises(ElcoGalevoPlantDataError, match="did not return JSON"):
+        await client.async_get_galevo_data({}, [1], allow_partial_zones=True)
+
+    assert len(session.calls) == 1
+
+
+async def test_poll_recovers_a_transient_plant_failure_before_fetching_zones(monkeypatch):
+    monkeypatch.setattr(api_module, "_SAFE_READ_RETRY_DELAY_SECONDS", 0)
+    client, session = _client(
+        FakeResponse(status=503),
+        FakeResponse(json_data={"data": {"items": [{"id": "OutsideTemp", "value": 4}]}}),
+        FakeResponse(json_data={"data": {"room": 20}}),
+    )
+
+    data, _ = await client.async_get_galevo_data({}, [1], allow_partial_zones=True)
+
+    assert [method for method, _, _ in session.calls] == ["POST", "POST", "GET"]
+    assert data.plant.outside_temperature == 4
+    assert data.zones[1].room_temperature == 20
+    assert not data.unavailable_zones
+
+
+@pytest.mark.parametrize(("status", "headers"), [(429, {}), (503, {"Retry-After": "120"})])
+async def test_poll_stops_after_zone_rate_limit_or_retry_after(status, headers):
+    client, session = _client(
+        FakeResponse(json_data={"data": {"items": [{"id": "OutsideTemp", "value": 4}]}}),
+        FakeResponse(json_data={"data": {"room": 20}}),
+        FakeResponse(status=status, headers=headers),
+    )
+
+    with pytest.raises(ElcoResponseError) as exc:
+        await client.async_get_galevo_data({}, [1, 2, 3], allow_partial_zones=True)
+
+    assert exc.value.status == status
+    assert exc.value.retry_after == (120 if headers else None)
+    assert len(session.calls) == 3
+    assert client.last_system_items == {}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ElcoAuthenticationError("Session rejected"), asyncio.CancelledError()],
+    ids=["reauth", "shutdown"],
+)
+async def test_poll_does_not_hide_zone_authentication_failure_or_cancellation(monkeypatch, error):
+    client, _ = _client(
+        FakeResponse(json_data={"data": {"items": [{"id": "OutsideTemp", "value": 4}]}})
+    )
+    read_zone = AsyncMock(side_effect=error)
+    monkeypatch.setattr(client, "async_get_galevo_zone", read_zone)
+
+    with pytest.raises(type(error)):
+        await client.async_get_galevo_data({}, [1, 2], allow_partial_zones=True)
+
+    read_zone.assert_awaited_once_with(1)
+
+
 async def test_bsb_keeps_optional_probe_language_and_does_not_retry_auth():
     client, session = _client(FakeResponse(status=401), family=5)
-    from custom_components.elco_aerotop.api import ElcoAuthenticationError
 
     with pytest.raises(ElcoAuthenticationError):
         await client.async_get_system_items({}, [1], culture="de")

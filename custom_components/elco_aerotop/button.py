@@ -19,7 +19,6 @@ class ElcoRefreshButton(ElcoAerotopEntity, ButtonEntity):
 
     _attr_icon = "mdi:refresh"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_name = "Refresh"
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator) -> None:
         super().__init__(coordinator, "refresh")
@@ -36,9 +35,8 @@ class ElcoCancelHolidayButton(ElcoAerotopEntity, ButtonEntity):
     _attr_icon = "mdi:calendar-remove"
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, zone_number: int) -> None:
-        super().__init__(coordinator, f"zone_{zone_number}_cancel_holiday")
+        super().__init__(coordinator, "cancel_holiday", zone_number=zone_number)
         self._zone_number = zone_number
-        self._attr_name = f"Zone {zone_number} cancel holiday"
 
     @property
     @override

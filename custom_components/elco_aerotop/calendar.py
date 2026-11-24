@@ -47,9 +47,8 @@ class ElcoHolidayCalendar(ElcoAerotopEntity, CalendarEntity):
     """A read-only calendar backed by the zone's BSB holiday periods."""
 
     def __init__(self, coordinator: ElcoDataUpdateCoordinator, zone_number: int) -> None:
-        super().__init__(coordinator, f"zone_{zone_number}_holidays")
+        super().__init__(coordinator, "holidays", zone_number=zone_number)
         self._zone_number = zone_number
-        self._attr_name = f"Zone {zone_number} holidays"
 
     def _events(self) -> list[CalendarEvent]:
         zone = self.coordinator.data.zones[self._zone_number]

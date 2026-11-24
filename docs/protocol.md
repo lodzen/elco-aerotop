@@ -56,7 +56,7 @@ The following calls expand model discovery without enabling any corresponding wr
 | Plant owner metadata | BSB | `GET /R2/PlantData/GetUserData?id={gateway}` |
 | Native BSB plant snapshot | BSB | `GET /api/v2/remote/bsbPlantData/{gateway}` |
 | Time programs | BSB | `POST /R2/PlantTimeProgBsb/GetData/{gateway}` with a program-ID filter |
-| Metering | BSB | `POST /R2/PlantMetering/GetData/{gateway}` |
+| Web metering | Both, if advertised | `POST /R2/PlantMetering/GetData/{gateway}` |
 | Maintenance | BSB | `GET /R2/PlantData/GetMaintenanceData?id={gateway}` |
 | Automated monitoring | BSB | `GET /R2/AutomatedMonitoring/GetDrawerData/{gateway}` |
 | Appliance data | BSB | `GET /R2/PlantData/GetBsbBoilerData?id={gateway}` |
@@ -215,7 +215,18 @@ The R2 UI reaches several routes the app never calls (evidence: user-provided HA
   `zone`, `occ`, `sn`, `code` per device: Master UI, Hybrid Energy Manager, Remote Modem,
   Heat Pump) — wired to the `bus_devices` diagnostic sensor + diagnostics payload.
 - `GET /api/v2/remote/reports/{gw}/energyAccount` → period-keyed map (`{"LastMonth": []}` —
-  `eEnergyAccountPeriod` 1–5); empty on this plant, no entity consumes `metering` today.
+  `eEnergyAccountPeriod` 1–5); empty on this plant.
+- `POST /R2/PlantMetering/GetData/{gw}` is a read through the authenticated web session,
+  with `{features, hasCooling}` in the request body. On Galevo, the coordinator reads it
+  after publishing the regular discovery result, when `hasMetering` is true. The request
+  has a 30-second budget including at most one web-session renewal and honors shared server
+  backoff. It stores only the parsed factor and year for Galevo.
+- The JAZ input is the unrounded `asKwhRaw.histogramData` view. It uses the
+  `PreviousYear` row in each combination of `ProducedEnergy` and `ConsumedElectricity`
+  with `Heating` and `Dhw`. Each row must supply twelve matching monthly labels and
+  numeric kWh values, and `oldestMonth` must reach January of the target year or earlier.
+  See [ELCO web metering](https://github.com/macschlingel/ha-remocon/pull/13) and the
+  [Ariston Galevo previous-year verification](https://github.com/wojciech-aniol/python-ariston-net-api/pull/9).
 - `GET /api/v2/remote/reports/{gw}/dailyRoomTemp` → `[]`; `co2Report` → HTTP 599 (unsupported).
 - `GET /api/v2/remote/plants/{gw}/consumptionsSettings` → 405 (write path).
   `POST .../getConsumptionsSettings` → `{currency, gasType, gasEnergyUnit, elecCost}`.
