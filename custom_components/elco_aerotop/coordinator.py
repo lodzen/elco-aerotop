@@ -39,6 +39,7 @@ from .const import (
     MENU_ITEM_BASE_IDS,
     MENU_ITEM_CASCADE_IDS,
     MENU_ITEM_HP_IDS,
+    MENU_ITEM_HP_STATUS_IDS,
     MENU_ITEM_HYBRID_IDS,
     MENU_ITEM_SLP_IDS,
     MENU_ITEM_VMC_IDS,
@@ -124,6 +125,9 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             (_SLOW_DISCOVERY_INTERVAL_SECONDS + scan_interval - 1) // scan_interval,
         )
         self._polls_until_slow_discovery = 0
+        # Live heat-pump status menu items (mode/defrost, flow temperatures)
+        # refreshed on every poll; keyed like the discovery catalog.
+        self._hp_status_items: dict[str, dict[str, Any]] = {}
         self._initial_discovery_complete = False
         self._background_discovery_task: asyncio.Task[None] | None = None
         self.initial_refresh_task: asyncio.Task[None] | None = None
@@ -615,13 +619,25 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         )
 
     @callback
+    def _with_hp_status_items(
+        self, menu_items: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Overlay the per-poll heat-pump status items on a menu-item catalog."""
+        merged = dict(menu_items)
+        merged.update(self._hp_status_items)
+        return merged
+
     def _publish_deferred_discovery(self, discovery: ReadOnlyDiscovery) -> None:
         """Merge optional data into the latest core snapshot."""
         if self.unloading:
             return
         self._slow_discovery = discovery
         current = self.data
-        discovery = replace(discovery, system_items=current.discovery.system_items)
+        discovery = replace(
+            discovery,
+            system_items=current.discovery.system_items,
+            menu_items=self._with_hp_status_items(discovery.menu_items),
+        )
         self.data = replace(current, discovery=discovery)
         self.async_update_listeners()
 
@@ -729,6 +745,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
         system_type: int | None,
     ) -> ElcoData:
         """Attach optional discovery to a fresh core capture."""
+        menu_items = self._with_hp_status_items(self._slow_discovery.menu_items)
         discovery = replace(
             self._slow_discovery,
             features=self._features or {},
@@ -736,6 +753,7 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
             system_items=system_items,
             probe_status=status,
             system_type=system_type,
+            menu_items=menu_items,
         )
         return replace(data, discovery=discovery)
 
@@ -786,6 +804,20 @@ class ElcoDataUpdateCoordinator(DataUpdateCoordinator[ElcoData]):
                         allow_partial_zones=True,
                     )
                     status["system_items"] = "available"
+                    if self._features.get("hasEm20", False):
+                        # One small extra read per poll: transient states like
+                        # defrost would be invisible at the hourly discovery
+                        # cadence. The IDs are the EM20 variants of the heat
+                        # pump status values (the APK names them *ForEm20);
+                        # without an EM20 energy manager they are not exposed.
+                        # Failures keep the previous values — the gateway
+                        # occasionally answers with transient 5xx.
+                        try:
+                            self._hp_status_items = await self.api.async_get_menu_items(
+                                MENU_ITEM_HP_STATUS_IDS
+                            )
+                        except (ElcoApiError, TimeoutError) as err:
+                            _LOGGER.debug("Heat-pump status menu items unreadable: %s", err)
                 else:
                     data = await self.api.async_get_data(self._zone_numbers, use_cache=True)
                     if write_refresh:

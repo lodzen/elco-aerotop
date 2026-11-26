@@ -1347,3 +1347,143 @@ async def test_manual_gateway_validates_a_bsb_snapshot_and_rejects_unsupported_f
         assert result["errors"] == {"base": "unsupported_controller"}
         api.async_get_data.assert_not_awaited()
     api.async_list_plants.assert_not_awaited()
+
+
+EM20_STATUS_MENU_ITEMS = {
+    "337": {
+        "id": 337,
+        "value": 0.0,
+        "isEnum": True,
+        "error": False,
+        "options": {"0": "OFF", "1": "ON"},
+    },
+    "340": {
+        "id": 340,
+        "value": 3.0,
+        "isEnum": True,
+        "error": False,
+        "options": {
+            "0": "OFF",
+            "1": "Standby",
+            "2": "Cooling",
+            "3": "Heating",
+            "9": "Defrost",
+            "17": "Defrost",
+        },
+    },
+    "341": {"id": 341, "value": 2.0, "isEnum": False, "error": False},
+    "348": {"id": 348, "value": 31.0, "isEnum": False, "error": False},
+    "349": {"id": 349, "value": 31.5, "isEnum": False, "error": False},
+}
+
+
+def _sensor_entity(hass, key):
+    return er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{GATEWAY_ID}_{key}")
+
+
+async def test_em20_heat_pump_status_sensors(hass, galevo_fixture):
+    """EM20 plants expose live heat-pump status through per-poll menu items."""
+    from custom_components.elco_aerotop.const import MENU_ITEM_HP_STATUS_IDS
+
+    api, entry, _ = galevo_fixture
+    api.async_get_features.return_value = {
+        **api.async_get_features.return_value,
+        "hasEm20": True,
+    }
+    api.async_get_menu_items.return_value = EM20_STATUS_MENU_ITEMS
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert any(
+        call.args and tuple(call.args[0]) == MENU_ITEM_HP_STATUS_IDS
+        for call in api.async_get_menu_items.await_args_list
+    )
+
+    mode = _sensor_entity(hass, "heat_pump_mode")
+    assert mode is not None
+    # Object ids are pinned to the language-independent key, so entity ids
+    # never carry German (or other native-language) slugs.
+    assert mode.endswith("_heat_pump_mode")
+    assert "warmepumpe" not in mode
+    state = hass.states.get(mode)
+    assert state.state == "Heating"
+    assert "Defrost" in state.attributes["options"]
+    assert state.attributes["options"].count("Defrost") == 1
+
+    assert float(hass.states.get(_sensor_entity(hass, "heat_pump_flow_temperature")).state) == 31.0
+    assert (
+        float(hass.states.get(_sensor_entity(hass, "heating_circuit_flow_temperature")).state)
+        == 31.5
+    )
+    assert (
+        float(hass.states.get(_sensor_entity(hass, "heat_pump_outside_air_temperature")).state)
+        == 2.0
+    )
+    assert hass.states.get(_sensor_entity(hass, "ch_backup_resistance")).state == "OFF"
+
+
+async def test_heat_pump_status_not_fetched_without_em20(hass, galevo_fixture):
+    """Plants without an EM20 manager never receive the poisonous request."""
+    from custom_components.elco_aerotop.const import MENU_ITEM_HP_STATUS_IDS
+
+    api, entry, _ = galevo_fixture
+    assert api.async_get_features.return_value.get("hasEm20") is False
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert not any(
+        call.args and tuple(call.args[0]) == MENU_ITEM_HP_STATUS_IDS
+        for call in api.async_get_menu_items.await_args_list
+    )
+    assert _sensor_entity(hass, "heat_pump_mode") is None
+
+
+async def test_heat_pump_status_failure_keeps_core_poll_alive(hass, galevo_fixture):
+    """A failing menu-item read must not break the core data update."""
+    api, entry, _ = galevo_fixture
+    api.async_get_features.return_value = {
+        **api.async_get_features.return_value,
+        "hasEm20": True,
+    }
+
+    async def menu_items(item_ids=()):
+        if tuple(item_ids) == (337, 340, 341, 348, 349):
+            raise ElcoConnectionError("gateway offline")
+        return {"119": {"value": 4}}
+
+    api.async_get_menu_items.side_effect = menu_items
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    coordinator = entry.runtime_data
+    assert coordinator.last_update_success
+    assert coordinator.data.zones[1] is not None
+    assert _sensor_entity(hass, "heat_pump_mode") is None
+
+
+async def test_heat_pump_status_survives_deferred_discovery_publish(hass, galevo_fixture):
+    """The deferred-discovery republish must not drop the per-poll status items."""
+    api, entry, _ = galevo_fixture
+    api.async_get_features.return_value = {
+        **api.async_get_features.return_value,
+        "hasEm20": True,
+    }
+
+    async def menu_items(item_ids=()):
+        if tuple(item_ids) == (337, 340, 341, 348, 349):
+            return EM20_STATUS_MENU_ITEMS
+        return {"119": {"value": 4}}
+
+    api.async_get_menu_items.side_effect = menu_items
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    coordinator = entry.runtime_data
+    assert coordinator.data.discovery.menu_items["340"]["value"] == 3.0
+    assert hass.states.get(_sensor_entity(hass, "heat_pump_mode")).state == "Heating"
+
+    await coordinator.async_refresh_deferred_discovery()
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert coordinator.data.discovery.menu_items["340"]["value"] == 3.0
+    assert hass.states.get(_sensor_entity(hass, "heat_pump_mode")).state == "Heating"

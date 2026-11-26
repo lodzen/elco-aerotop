@@ -53,6 +53,7 @@ class ElcoSensor(ElcoAerotopEntity, SensorEntity):
         zone_number: int | None = None,
         translation_key: str | None = None,
         translation_placeholders: dict[str, str] | None = None,
+        enum_options: list[str] | None = None,
     ) -> None:
         super().__init__(
             coordinator,
@@ -65,6 +66,9 @@ class ElcoSensor(ElcoAerotopEntity, SensorEntity):
         self._available_fn = available_fn
         self._attr_entity_category = entity_category
         self._attr_entity_registry_enabled_default = enabled_default
+        if enum_options is not None:
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = enum_options
         if temperature:
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -141,7 +145,8 @@ class ElcoGalevoEstimatedJazSensor(ElcoAerotopEntity, SensorEntity):
     def native_value(self) -> float | None:
         """Return delivered heat divided by electricity for the same year."""
         report = self.coordinator.galevo_annual_metering
-        return report.performance_factor if report is not None else None
+        # Monthly kWh buckets make anything past two decimals noise.
+        return round(report.performance_factor, 2) if report is not None else None
 
     @property
     def available(self) -> bool:
@@ -278,6 +283,25 @@ def _menu_item_value(data: ElcoData, item_id: str) -> float | None:
     if not isinstance(item, dict) or item.get("error") is True:
         return None
     return _as_number(item.get("value"))
+
+
+def _menu_item_options(data: ElcoData, item_id: str) -> dict[str, str]:
+    """Return the device-provided enum labels keyed by numeric value."""
+    item = data.discovery.menu_items.get(item_id)
+    if not isinstance(item, dict):
+        return {}
+    options = item.get("options")
+    return options if isinstance(options, dict) else {}
+
+
+def _menu_item_enum_label(data: ElcoData, item_id: str) -> str | None:
+    item = data.discovery.menu_items.get(item_id)
+    if not isinstance(item, dict) or item.get("error") is True:
+        return None
+    value = _as_number(item.get("value"))
+    if value is None:
+        return None
+    return _menu_item_options(data, item_id).get(str(int(value)))
 
 
 def _bsb_available(data: ElcoData, address: str) -> bool:
@@ -680,6 +704,58 @@ def _create_entities(
                         _menu_item_value(state, source) is not None
                     ),
                     enabled_default=enabled_default,
+                )
+            )
+
+        # Live heat-pump status values (MENU_ITEM_HP_STATUS_IDS), polled every
+        # update instead of at the hourly discovery cadence.
+        for item_id, key in (
+            ("348", "heat_pump_flow_temperature"),
+            ("341", "heat_pump_outside_air_temperature"),
+        ):
+            if _menu_item_value(data, item_id) is None:
+                continue
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    key,
+                    lambda state, source=item_id: _menu_item_value(state, source),
+                    temperature=True,
+                    available_fn=lambda state, source=item_id: (
+                        _menu_item_value(state, source) is not None
+                    ),
+                )
+            )
+
+        # The measured system flow temperature is not exposed as a dataItem on
+        # every plant; the menu-item value is the fallback source then.
+        if not _has_system_item(data, "ChFlowTemp") and _menu_item_value(data, "349") is not None:
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    "heating_circuit_flow_temperature",
+                    lambda state: _menu_item_value(state, "349"),
+                    temperature=True,
+                    available_fn=lambda state: _menu_item_value(state, "349") is not None,
+                )
+            )
+
+        for item_id, key in (
+            ("340", "heat_pump_mode"),
+            ("337", "ch_backup_resistance"),
+        ):
+            options = _menu_item_options(data, item_id)
+            if not options or _menu_item_enum_label(data, item_id) is None:
+                continue
+            entities.append(
+                ElcoSensor(
+                    coordinator,
+                    key,
+                    lambda state, source=item_id: _menu_item_enum_label(state, source),
+                    enum_options=list(dict.fromkeys(options.values())),
+                    available_fn=lambda state, source=item_id: (
+                        _menu_item_enum_label(state, source) is not None
+                    ),
                 )
             )
 

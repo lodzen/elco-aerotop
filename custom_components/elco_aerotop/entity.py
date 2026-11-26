@@ -63,6 +63,11 @@ class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
             self.coordinator.data.unavailable_zones
         )
 
+    @property
+    def suggested_object_id(self) -> str | None:
+        """Keep generated entity ids language-independent English keys."""
+        return self._elco_object_id_key
+
     def has_registry_entry(self, entity_domain: str) -> bool:
         """Return whether this entity already has a persistent Home Assistant ID."""
         registry = er.async_get(self.coordinator.hass)
@@ -87,6 +92,12 @@ class ElcoAerotopEntity(CoordinatorEntity[ElcoDataUpdateCoordinator]):
         if translation_placeholders is not None:
             self._attr_translation_placeholders = translation_placeholders
         self._attr_unique_id = f"{coordinator.api.gateway_id}_{key}"
+        # Pin entity ids to the language-independent key: without this,
+        # Home Assistant derives object ids from the display-language
+        # translation (e.g. German slugs on a German system) for every
+        # language in NATIVE_ENTITY_IDS. Display names stay localized via
+        # the translation key.
+        self._elco_object_id_key = key
         metadata = coordinator.data.discovery.plant_metadata
         header = coordinator.data.discovery.plant_header
         self._attr_device_info = DeviceInfo(

@@ -322,4 +322,13 @@ MENU_ITEM_HYBRID_IDS: Final = tuple(range(221, 251))
 MENU_ITEM_HP_IDS: Final = tuple(range(251, 270))
 MENU_ITEM_CASCADE_IDS: Final = tuple(range(270, 275))
 
+# Live heat-pump status values outside the advanced-settings catalog. These
+# are the EM20 variants (the APK names them *ForEm20): plants expose them only
+# when an EM20 energy manager is present (features hasEm20). 337 backup
+# resistance, 340 operating mode (including defrost), 341 outdoor temperature
+# at the unit, 348 HP flow temperature, 349 measured system flow temperature.
+# Polled every update so transient states like defrost are visible; the hourly
+# discovery catalog would be too coarse.
+MENU_ITEM_HP_STATUS_IDS: Final = (337, 340, 341, 348, 349)
+
 DEFAULT_UPDATE_INTERVAL: Final = timedelta(seconds=DEFAULT_SCAN_INTERVAL)

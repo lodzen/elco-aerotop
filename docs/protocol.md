@@ -96,6 +96,22 @@ Galevo menu-item IDs come from a bounded mobile API catalog. The integration tri
 falls back to individual IDs when the batch yields no usable results. Menu-item discovery is
 read-only.
 
+Batch responses handle inapplicable IDs inconsistently (verified on an EM20 heat-pump plant):
+items whose menu branch exists but does not apply are silently omitted — a batch of only
+inapplicable IDs even returns an empty body with HTTP 200 — while IDs from menu branches the
+plant does not have poison the whole batch with HTTP 500. Probing unknown ID ranges therefore
+needs small batches or per-item requests.
+
+Live heat-pump status values are menu items outside the settings catalog: 337 backup resistance,
+340 heat-pump operating mode (enum including `Defrost`), 341 outdoor temperature at the unit,
+348 HP flow temperature, and 349 measured system flow temperature. The decompiled APK names these
+entries `*ForEm20` (`eMenuItemDto`) — plants expose them only when an EM20 energy manager is
+present (`Features.hasEm20`). Without an EM20 the same information is expected as dataItems
+(`HpSystemOutsideTemp`, `HpDhwStorageTemperature`, `HpSystemResistor1` …), which indeed return
+empty item lists on EM20 plants. The integration polls the five EM20 IDs on every update — the
+hourly discovery cadence would hide transient states such as defrost — keeps the last values on
+transient failures, and creates the sensors only when the items answer.
+
 `menuItems` belongs to the Galevo controller family. When `Features` reports `systemType: 5` (BSB),
 the integration skips that family and records `unsupported:bsb_system`; BSB discovery continues
 through `bsbPlantData` and the reviewed `PlantMenuBsb/ReadDataPoints` allowlist.
